@@ -26,9 +26,6 @@ fun_hac <- function (x) {(x - 249.5578) / 839.3971}
 # 20260622
 ## Load data
 ```{r}
-# dat_1 <- read.csv("01_SPME_GC_MS/01_data/02_data_old_manual_integration_chemstation/20260709_dat.csv", 
-#                   header = T, skip = 3, sep = ",") # in this data tbh sometimes there's a hole in the leaf, so it's not completely completely one-sided dam (some are fine tho idk)
-
 dat_2 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260709_results.csv", 
                   header = T, sep = ",") # online tool
 
@@ -172,31 +169,6 @@ dat_all3 <- dat_all2 |>
   mutate(ratio = quant_mg / sum_glv)
 
 ```
-
-
-
-dat manual integration:
-
-```{r}
-# dat_11 <- dat_1 |>
-#   mutate(area_eic = ifelse(area_eic == "LOD", 0.0000001, area_eic))
-# 
-# dat_11$area_eic <- as.numeric(dat_11$area_eic)
-# 
-# dat_12 <- dat_11 |>
-#   mutate(treat = ifelse(plant_nr %in% c("C1", "C2", "C3"), "c", "W"))
-# 
-# HAL <- subset(dat_12, compound == "HAL")
-# HOL <- subset(dat_12, compound == "HOL")
-# HAC <- subset(dat_12, compound == "HAC")
-
-```
-
-```{r}
-# calcualte actual concentrations (-ish, the curves are not all optimal yet, and I'm now assuming everything is linear, which is unrealistic, and HAL is fucked anyways)
-# concentration = (area - intercept) / slope
-```
-
 
 # Plot
 
