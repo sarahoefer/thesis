@@ -1,0 +1,518 @@
+---
+title: "20260722_plant_razorblade"
+author: "Sara Hoefer"
+date: "2026-07-22"
+output: html_document
+---
+
+# Load packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggh4x)
+library(tidyr)
+```
+
+# Define Functions
+```{r}
+se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
+
+fun_hal <- function (x) {(x - (-286.8851)) / 65.1187}
+fun_hol <- function (x) {(x - 284.2803) / 422.3727}
+fun_hac <- function (x) {(x - 249.5578) / 839.3971}
+```
+
+
+# 20260622
+## Load data
+```{r}
+# dat_1 <- read.csv("01_SPME_GC_MS/01_data/02_data_old_manual_integration_chemstation/20260709_dat.csv", 
+#                   header = T, skip = 3, sep = ",") # in this data tbh sometimes there's a hole in the leaf, so it's not completely completely one-sided dam (some are fine tho idk)
+
+dat_2 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260709_results.csv", 
+                  header = T, sep = ",") # online tool
+
+dat_3 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260708_results.csv", 
+                  header = T, sep = ",") # online tool
+
+dat_4 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260710_results.csv", 
+                  header = T, sep = ",") # online tool
+
+dat_5 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260715_results.csv", 
+                  header = T, sep = ",") # online tool
+
+```
+
+# wrangle data
+
+dat onlinesoftware:
+```{r}
+# dat_2
+dat_21 <- dat_2[10:84,]
+
+dat_22 <- dat_21 %>%
+  separate(Sample,
+           into = c("date", "plant", "segment", "iteration"),
+           sep = "_")
+
+dat_23 <- dat_22 |>
+  mutate(Compound = ifelse(Compound == "Z3Hexen-1-ol", "HOL",
+                           ifelse(Compound == "Z3Hexenal", "HAL", "HAC"))) |>
+  select( -Error)
+
+dat_24 <- dat_23 |>
+  mutate(quant_mg = ifelse(Compound == "HAL", fun_hal(Area),
+                           ifelse(Compound == "HOL", fun_hol(Area), fun_hac(Area))))
+
+dat_24$iteration <- as.numeric(dat_24$iteration)
+
+dat_25 <- dat_24 |>
+  mutate(quant_mg = ifelse(quant_mg > 0, quant_mg, 0),
+         tim_min = iteration * 15,
+         treat = "w")
+
+dat_26 <- dat_25 |>
+  mutate(quant_mg = ifelse(is.na(quant_mg), 0, quant_mg))
+
+
+# dat_3
+
+dat_31 <- dat_3[37:81,]
+
+dat_32 <- dat_31 %>%
+  separate(Sample,
+           into = c("date", "plant", "segment", "iteration"),
+           sep = "_")
+
+dat_33 <- dat_32 |>
+  mutate(quant_mg = ifelse(Compound == "HAL", fun_hal(Area),
+                           ifelse(Compound == "HOL", fun_hol(Area), fun_hac(Area)))) |>
+  select(-Error)
+
+dat_33$iteration <- as.numeric(dat_33$iteration)
+
+dat_34 <- dat_33 |>
+  mutate(quant_mg = ifelse(quant_mg > 0, quant_mg, 0),
+         tim_min = iteration * 15,
+         treat = "w")
+
+# dat_4
+
+dat_41 <- dat_4[c(1:15, 22:81),]
+
+dat_42 <- dat_41 %>%
+  separate(Sample,
+           into = c("date", "plant", "segment", "iteration"),
+           sep = "_")
+
+dat_43 <- dat_42 |>
+  mutate(quant_mg = ifelse(Compound == "HAL", fun_hal(Area),
+                           ifelse(Compound == "HOL", fun_hol(Area), fun_hac(Area)))) |>
+  select(-Error)
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(quant_mg = ifelse(quant_mg > 0, quant_mg, 0),
+         tim_min = iteration * 15,
+         treat = ifelse(plant %in% c("P1", "P2"), "w", "c"))
+
+# dat_5
+
+dat_51 <- dat_5[28:72,]
+
+dat_52 <- dat_51 %>%
+  separate(Sample,
+           into = c("date", "plant", "treat", "segment", "iteration"),
+           sep = "_")
+
+dat_53 <- dat_52 |>
+  mutate(quant_mg = ifelse(Compound == "HAL", fun_hal(Area),
+                           ifelse(Compound == "HOL", fun_hol(Area), fun_hac(Area)))) |>
+  select(-Error)
+
+dat_53$iteration <- as.numeric(dat_53$iteration)
+
+dat_54 <- dat_53 |>
+  mutate(quant_mg = ifelse(quant_mg > 0, quant_mg, 0),
+         tim_min = iteration * 15,
+         treat = "c") |>
+  select(date, plant, segment, iteration, Compound, RT_Found, Area, Height, Status, quant_mg, tim_min, treat)
+
+dat_55 <- dat_54 |>
+  mutate(quant_mg = ifelse(is.na(quant_mg), 0, quant_mg))
+
+dat_all <- rbind(dat_26, dat_34, dat_44, dat_55)
+
+dat_all1 <- dat_all |>
+  mutate(area = Area,
+         comp = Compound,
+         quant_mg = ifelse(is.na(quant_mg), 0, quant_mg),
+         tim_min = tim_min -15) |>
+  select(-Area, -Compound)
+
+
+dat_hal <- subset(dat_all1, comp == "HAL")
+dat_hol <- subset(dat_all1, comp == "HOL")
+dat_hac <- subset(dat_all1, comp == "HAC")
+
+```
+
+## Ratios
+```{r}
+# add a column total glv emissions/sample:
+
+dat_all2 <- dat_all1 |>
+  group_by(date, plant, segment, iteration) |>
+  mutate(sum_glv = sum(quant_mg))
+
+# add a column ratio compound to total glvs
+
+dat_all3 <- dat_all2 |>
+  mutate(ratio = quant_mg / sum_glv)
+
+```
+
+
+
+dat manual integration:
+
+```{r}
+# dat_11 <- dat_1 |>
+#   mutate(area_eic = ifelse(area_eic == "LOD", 0.0000001, area_eic))
+# 
+# dat_11$area_eic <- as.numeric(dat_11$area_eic)
+# 
+# dat_12 <- dat_11 |>
+#   mutate(treat = ifelse(plant_nr %in% c("C1", "C2", "C3"), "c", "W"))
+# 
+# HAL <- subset(dat_12, compound == "HAL")
+# HOL <- subset(dat_12, compound == "HOL")
+# HAC <- subset(dat_12, compound == "HAC")
+
+```
+
+```{r}
+# calcualte actual concentrations (-ish, the curves are not all optimal yet, and I'm now assuming everything is linear, which is unrealistic, and HAL is fucked anyways)
+# concentration = (area - intercept) / slope
+```
+
+
+# Plot
+
+```{r}
+pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+
+## HAL
+
+dat_p <- dat_hal |>
+  group_by(segment, tim_min, treat) |>
+  mutate(mean_a = mean(quant_mg, na.rm = T),
+         se_a = se(quant_mg))
+
+plot1 <- ggplot(dat_p, aes(x = tim_min, y = mean_a, color = treat)) +
+  facet_wrap(~ segment, scales = "free_y",
+             labeller = labeller(segment = c(
+      S1 = "Proximal",
+      S2 = "Local",
+      S3 = "Distal"))) +
+  ggh4x::facetted_pos_scales(
+    y = list(
+      segment == "S1" ~ scale_y_continuous(limits = c(0, 400)),
+      segment == "S2" ~ scale_y_continuous(limits = c(0, 800)),
+      segment == "S3" ~ scale_y_continuous(limits = c(0, 400))
+    )
+  ) +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(aes(fill = treat),linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  scale_x_continuous(limits=c(-5, 65), expand = c(0,0),
+                     breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "quantity (mg)", title = "(Z)-3-Hexenal")
+
+plot1
+
+## HOL
+
+dat_p <- dat_hol |>
+  group_by(segment, tim_min, treat) |>
+  mutate(mean_a = mean(quant_mg, na.rm = T),
+         se_a = se(quant_mg))
+
+plot2 <- ggplot(dat_p, aes(x = tim_min, y = mean_a, color = treat)) +
+  facet_wrap(~ segment, scales = "free_y",
+             labeller = labeller(segment = c(
+      S1 = "Proximal",
+      S2 = "Local",
+      S3 = "Distal"))) +
+   ggh4x::facetted_pos_scales(
+    y = list(
+      segment == "S1" ~ scale_y_continuous(limits = c(0, 50)),
+      segment == "S2" ~ scale_y_continuous(limits = c(0, 100)),
+      segment == "S3" ~ scale_y_continuous(limits = c(0, 50))
+    )
+  ) +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+                     breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "quantity (mg)", title = "(Z)-3-Hexen-1-ol")
+
+plot2
+
+
+## HAC
+
+dat_p <- dat_hac |>
+  group_by(segment, tim_min, treat) |>
+  mutate(mean_a = mean(quant_mg, na.rm = T),
+         se_a = se(quant_mg))
+
+plot3 <- ggplot(dat_p, aes(x = tim_min, y = mean_a, color = treat)) +
+  facet_wrap(~ segment, scales = "free_y",
+             labeller = labeller(segment = c(
+      S1 = "Proximal",
+      S2 = "Local",
+      S3 = "Distal"))) +
+   ggh4x::facetted_pos_scales(
+    y = list(
+      segment == "S1" ~ scale_y_continuous(limits = c(0, 10)),
+      segment == "S2" ~ scale_y_continuous(limits = c(0, 20)),
+      segment == "S3" ~ scale_y_continuous(limits = c(0, 10))
+    )
+  ) +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+                     breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "quantity (mg)", title = "(Z)-3-Hexenyl acetate")
+
+plot3
+
+# 
+# plot1
+# plot2
+# plot3
+
+```
+
+
+## Ratios
+```{r}
+
+pal2 <- c("white","#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+
+dat_wounded <- subset(dat_all3, treat == "w")
+
+dat_p <- dat_wounded |>
+  group_by(segment, iteration, comp) |>
+  mutate(mean_a = mean(ratio, na.rm = T),
+         se_a = se(ratio))
+
+dat_p$iteration <- as.factor(dat_p$iteration)
+
+plot3 <- ggplot(dat_p, aes(x = segment, y = mean_a, fill = iteration)) +
+  facet_wrap(~ comp, scales = "free_y"
+      #        ,
+      #        labeller = labeller(segment = c(
+      # S1 = "Proximal",
+      # S2 = "Local",
+      # S3 = "Distal"))
+      ) +
+  #  ggh4x::facetted_pos_scales(
+  #   y = list(
+  #     segment == "S1" ~ scale_y_continuous(limits = c(0, 10)),
+  #     segment == "S2" ~ scale_y_continuous(limits = c(0, 20)),
+  #     segment == "S3" ~ scale_y_continuous(limits = c(0, 10))
+  #   )
+  # ) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0,
+                position = position_dodge(0.9)) +
+  scale_fill_manual(values = pal2) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "Segment, Compound", y = "ratio GLV / total GLVs (mg)",
+       fill = "Iteration")
+
+plot3
+
+plot5 <- ggplot(dat_p, aes(x = segment, y = mean_a, fill = comp)) +
+  facet_wrap(~ iteration, scales = "free_y"
+      #        ,
+      #        labeller = labeller(segment = c(
+      # S1 = "Proximal",
+      # S2 = "Local",
+      # S3 = "Distal"))
+      ) +
+  #  ggh4x::facetted_pos_scales(
+  #   y = list(
+  #     segment == "S1" ~ scale_y_continuous(limits = c(0, 10)),
+  #     segment == "S2" ~ scale_y_continuous(limits = c(0, 20)),
+  #     segment == "S3" ~ scale_y_continuous(limits = c(0, 10))
+  #   )
+  # ) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0,
+                position = position_dodge(0.9)) +
+  scale_fill_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "Segment", y = "ratio GLV / total GLVs (mg)",
+       fill = "iteration")
+plot5
+
+
+plot6 <- ggplot(dat_p1, aes(x = segment, y = mean_a, fill = factor(comp, levels = c("HAL", "HOL", "HAC")))) +
+  facet_wrap(~ iteration, scales = "free_y",
+             nrow = 3,
+             labeller = labeller(iteration = c(
+      "1" = "0-15 mins",
+      "2" = "15-30 mins",
+      "3" = "30-45 mins",
+      "4" = "45-60 mins",
+      "5" = "60-75 mins"))
+      ) +
+  #  ggh4x::facetted_pos_scales(
+  #   y = list(
+  #     segment == "S1" ~ scale_y_continuous(limits = c(0, 10)),
+  #     segment == "S2" ~ scale_y_continuous(limits = c(0, 20)),
+  #     segment == "S3" ~ scale_y_continuous(limits = c(0, 10))
+  #   )
+  # ) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0,
+                position = position_dodge(0.9)) +
+  scale_fill_manual(values = pal1) +
+  scale_x_discrete(labels = c("S1" = "Proximal",
+                              "S2" = "Local",
+                              "S3" = "Distal")) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "Segment", y = "ratio GLV / total GLVs (mg)",
+       fill = "compound")
+
+plot6
+plot3
+plot5
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
