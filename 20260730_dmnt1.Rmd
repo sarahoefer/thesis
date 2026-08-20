@@ -1,0 +1,829 @@
+---
+title: "DMNT1"
+author: "Sara Hoefer"
+date: "2026-07-31"
+output: html_document
+---
+
+# Load packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+# Define Functions
+```{r}
+se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
+
+fun_hal <- function (x) {(x - (-286.8851)) / 65.1187}
+fun_hol <- function (x) {(x - 284.2803) / 422.3727}
+fun_hac <- function (x) {(x - 249.5578) / 839.3971}
+```
+# 20260622
+## Load data
+```{r}
+# dat_1 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260730_results.csv",
+#                   header = T, sep = ",") # sometimes the RT in this df seems wrong, bc I can't change the apex the software automatically detected, but I swear I integrated the correct peak
+# 
+# dat_2 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260731_results.csv",
+#                   header = T, sep = ",") # sometimes the RT in this df seems wrong, bc I can't change the apex the software automatically detected, but I swear I integrated the correct peak
+# 
+# dat_2 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260731_2_onlydmnt_results.csv",
+#                   header = T, sep = ",") # sometimes the RT in this df seems wrong, bc I can't change the apex the software automatically detected, but I swear I integrated the correct peak
+# 
+# 
+# dat_4 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260807_results.csv",
+#                   header = T, sep = ",")
+
+# good DMNT data:
+
+dat_5 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260810_results.csv",
+                  header = T, sep = ",")
+
+dat_6 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260811_results.csv",
+                  header = T, sep = ",")
+
+dat_7 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260812_results.csv",
+                  header = T, sep = ",")
+
+dat_8 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260813_results.csv",
+                  header = T, sep = ",")
+
+dat_9 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260814_results.csv",
+                  header = T, sep = ",")
+
+dat_101 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_results.csv",
+                  header = T, sep = ",")
+
+```
+
+# wrangle data
+```{r}
+dat_11 <- dat_1[11:85,] # exclude blanks
+dat_12 <- dat_11 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_13 <- dat_12 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_13$iteration <- as.numeric(dat_13$iteration)
+
+dat_14 <- dat_13 |>
+  mutate(time_min = iteration * 60 + 50 - 30) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 20 mins to measure, and I started the measurements 50 mins after wounding
+
+colnames(dat_14) <- c("date", "segment", "iteration", "compound", "RT", "Area", "height", "status", "error", "area", "time_min")
+
+dat_15 <- dat_14 |>
+  select(-Area, -height, -status, -error)
+
+dat_hal <- subset(dat_15, compound == "HAL")
+dat_hol <- subset(dat_15, compound == "HOL")
+dat_hac <- subset(dat_15, compound == "HAC")
+dat_dmnt <- subset(dat_15, compound == "DMNT")
+dat_lina <- subset(dat_15, compound == "Linalool")
+
+```
+
+```{r}
+dat_21 <- dat_2[11:190,] # exclude blanks
+dat_22 <- dat_21 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_23 <- dat_22 |>
+  separate(col=Sample, into=c("date","plant_nr", "segment", "iteration"), sep = "_")
+
+dat_23$iteration <- as.numeric(dat_23$iteration)
+
+dat_24 <- dat_23 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+colnames(dat_24) <- c("date", "plant_nr", "segment", "iteration", "compound", "RT", "Area", "height", "status", "error", "area", "time_min")
+
+dat_25 <- dat_24 |>
+  select(-Area, -height, -status, -error)
+
+dat_hal2 <- subset(dat_25, compound == "HAL")
+dat_hol2 <- subset(dat_25, compound == "HOL")
+dat_hac2 <- subset(dat_25, compound == "HAC")
+dat_dmnt2 <- subset(dat_25, compound == "DMNT")
+dat_lina2 <- subset(dat_25, compound == "Linalool")
+
+```
+
+```{r}
+dat_41 <- dat_4[11:190,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+```
+
+```{r}
+#dat 10.08.2026
+dat_41 <- dat_5[11:205,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_10 <- dat_46
+```
+
+```{r}
+#dat 11.08.2026
+dat_41 <- dat_6[11:190,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_11 <- dat_46
+```
+
+```{r}
+#dat 12.08.2026
+dat_41 <- dat_7[11:205,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area))
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_12 <- dat_46
+```
+
+
+```{r}
+#dat 13.08.2026
+dat_41 <- dat_8[11:205,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area)) 
+# |>
+#   select(-Qualifier_Status, -Qualifier_Message)
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_13 <- dat_46
+```
+
+
+```{r}
+#dat 14.08.2026
+dat_41 <- dat_9[11:205,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area)) 
+# |>
+#   select(-Qualifier_Status, -Qualifier_Message)
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_14 <- dat_46
+```
+
+```{r}
+#dat 17.08.2026
+dat_41 <- dat_101[11:205,]
+
+dat_42 <- dat_41 |>
+  mutate(area = ifelse(is.na(Area), 0, Area)) 
+# |>
+#   select(-Qualifier_Status, -Qualifier_Message)
+
+dat_43 <- dat_42 |>
+  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
+
+dat_43$iteration <- as.numeric(dat_43$iteration)
+
+dat_44 <- dat_43 |>
+  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
+
+dat_45 <- dat_44 |>
+  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
+                        ifelse(Compound == "HOL", fun_hol(area),
+                               ifelse(Compound == "HAC", fun_hac(area), area))))
+
+dat_46 <- dat_45 |>
+  mutate(quant = ifelse(area == 0, 0, quant))
+
+dat_15 <- dat_46
+```
+
+
+```{r}
+# combine dfs
+
+dat_all <- rbind(dat_10, dat_11, dat_12, dat_13, dat_14, dat_15)
+```
+
+
+## Plot
+
+```{r}
+pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+
+## HAL
+
+# dat_p <- dat_hal |>
+#   group_by(segment, time_min) |>
+#   mutate(mean_a = mean(area, na.rm = T),
+#          se_a = se(conc))
+
+plot1 <- ggplot(dat_hal, aes(x = time_min, y = area, color = segment)) +
+  # facet_wrap(~ segment, scales = "free_y",
+  #            labeller = labeller(segment = c(
+  #     S1 = "Proximal",
+  #     S2 = "Local",
+  #     S3 = "Distal"))) +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12)
+        # strip.placement = "outside",
+        # strip.background = element_blank(),
+        # strip.text = element_text(size = 12)
+        ) +
+  labs(x = "time (min)", y = "area", title = "HAL")
+
+plot1
+
+## HOL
+
+# dat_p <- HOL1 |>
+#   group_by(segment, tim_min, treat) |>
+#   mutate(mean_a = mean(conc, na.rm = T),
+#          se_a = se(conc))
+
+plot2 <- ggplot(dat_hol, aes(x = time_min, y = area, color = segment)) +
+  # facet_wrap(~ segment, scales = "free_y",
+  #            labeller = labeller(segment = c(
+  #     S1 = "Proximal",
+  #     S2 = "Local",
+  #     S3 = "Distal"))) +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area", title = "HOL")
+
+plot2
+
+
+## HAC
+
+# dat_p <- HAC1 |>
+#   group_by(segment, tim_min, treat) |>
+#   mutate(mean_a = mean(conc, na.rm = T),
+#          se_a = se(conc))
+
+plot3 <- ggplot(dat_hac, aes(x = time_min, y = area, color = segment)) +
+  # facet_wrap(~ segment, scales = "free_y",
+  #            labeller = labeller(segment = c(
+  #     S1 = "Proximal",
+  #     S2 = "Local",
+  #     S3 = "Distal"))) +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area", title = "HAC")
+
+plot3
+
+plot4 <- ggplot(dat_dmnt, aes(x = time_min, y = area, color = segment)) +
+  # facet_wrap(~ segment, scales = "free_y",
+  #            labeller = labeller(segment = c(
+  #     S1 = "Proximal",
+  #     S2 = "Local",
+  #     S3 = "Distal"))) +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area", title = "DMNT")
+
+plot4
+
+
+neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
+dat_16 <- arrange(mutate(dat_15,
+             compound = factor(compound,levels=neworder)),compound)
+
+
+plot5 <- ggplot(dat_16, aes(x = time_min, y = area, color = segment)) +
+  facet_wrap(~ compound, scales = "free_y") +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+  scale_fill_manual(labels = c("proximal",
+                               "local",
+                               "distal"),
+                    breaks = c("S1", "S2", "S3")) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot5
+
+plot1
+plot2
+plot3
+plot4
+plot5
+
+```
+
+dat_2:
+
+```{r}
+pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+
+# ## HAL
+# 
+# # dat_p <- dat_hal |>
+# #   group_by(segment, time_min) |>
+# #   mutate(mean_a = mean(area, na.rm = T),
+# #          se_a = se(conc))
+# 
+# plot1 <- ggplot(dat_hal2, aes(x = time_min, y = area, color = segment)) +
+#   # facet_wrap(~ segment, scales = "free_y",
+#   #            labeller = labeller(segment = c(
+#   #     S1 = "Proximal",
+#   #     S2 = "Local",
+#   #     S3 = "Distal"))) +
+#   # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+#   geom_line(linewidth = 0.7) + 
+#   geom_point() +
+#   scale_color_manual(values = pal1) +
+#   # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+#   #                    breaks=seq(0,60,15)) +
+#    theme(text = element_text(size=12),
+#         legend.position = "bottom",
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), 
+#         panel.background = element_rect(fill = "white",
+#                                         color = "white"),
+#         axis.line = element_line(colour = "black"), 
+#         axis.text = element_text(size=12),
+#         axis.title.x = element_text(size = 12),
+#         axis.text.x=element_text(),
+#         axis.text.y=element_text(color='black'),
+#         title = element_text(size = 12)
+#         # strip.placement = "outside",
+#         # strip.background = element_blank(),
+#         # strip.text = element_text(size = 12)
+#         ) +
+#   labs(x = "time (min)", y = "area", title = "HAL")
+# 
+# plot1
+# 
+# ## HOL
+# 
+# # dat_p <- HOL1 |>
+# #   group_by(segment, tim_min, treat) |>
+# #   mutate(mean_a = mean(conc, na.rm = T),
+# #          se_a = se(conc))
+# 
+# plot2 <- ggplot(dat_hol2, aes(x = time_min, y = area, color = segment)) +
+#   # facet_wrap(~ segment, scales = "free_y",
+#   #            labeller = labeller(segment = c(
+#   #     S1 = "Proximal",
+#   #     S2 = "Local",
+#   #     S3 = "Distal"))) +
+#   # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+#   geom_line(linewidth = 0.7) + 
+#   geom_point() +
+#   scale_color_manual(values = pal1) +
+#   # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+#   #                    breaks=seq(0,60,15)) +
+#    theme(text = element_text(size=12),
+#         legend.position = "bottom",
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), 
+#         panel.background = element_rect(fill = "white",
+#                                         color = "white"),
+#         axis.line = element_line(colour = "black"), 
+#         axis.text = element_text(size=12),
+#         axis.title.x = element_text(size = 12),
+#         axis.text.x=element_text(),
+#         axis.text.y=element_text(color='black'),
+#         title = element_text(size = 12),
+#         strip.placement = "outside",
+#         strip.background = element_blank(),
+#         strip.text = element_text(size = 12)) +
+#   labs(x = "time (min)", y = "area", title = "HOL")
+# 
+# plot2
+# 
+# 
+# ## HAC
+# 
+# # dat_p <- HAC1 |>
+# #   group_by(segment, tim_min, treat) |>
+# #   mutate(mean_a = mean(conc, na.rm = T),
+# #          se_a = se(conc))
+# 
+# plot3 <- ggplot(dat_hac2, aes(x = time_min, y = area, color = segment)) +
+#   # facet_wrap(~ segment, scales = "free_y",
+#   #            labeller = labeller(segment = c(
+#   #     S1 = "Proximal",
+#   #     S2 = "Local",
+#   #     S3 = "Distal"))) +
+#   # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+#   geom_line(linewidth = 0.7) + 
+#   geom_point() +
+#   scale_color_manual(values = pal1) +
+#   # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+#   #                    breaks=seq(0,60,15)) +
+#    theme(text = element_text(size=12),
+#         legend.position = "bottom",
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), 
+#         panel.background = element_rect(fill = "white",
+#                                         color = "white"),
+#         axis.line = element_line(colour = "black"), 
+#         axis.text = element_text(size=12),
+#         axis.title.x = element_text(size = 12),
+#         axis.text.x=element_text(),
+#         axis.text.y=element_text(color='black'),
+#         title = element_text(size = 12),
+#         strip.placement = "outside",
+#         strip.background = element_blank(),
+#         strip.text = element_text(size = 12)) +
+#   labs(x = "time (min)", y = "area", title = "HAC")
+# 
+# plot3
+# 
+# plot4 <- ggplot(dat_dmnt2, aes(x = time_min, y = area, color = segment)) +
+#   # facet_wrap(~ segment, scales = "free_y",
+#   #            labeller = labeller(segment = c(
+#   #     S1 = "Proximal",
+#   #     S2 = "Local",
+#   #     S3 = "Distal"))) +
+#   # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+#   geom_line(linewidth = 0.7) + 
+#   geom_point() +
+#   scale_color_manual(values = pal1) +
+#   # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+#   #                    breaks=seq(0,60,15)) +
+#    theme(text = element_text(size=12),
+#         legend.position = "bottom",
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(), 
+#         panel.background = element_rect(fill = "white",
+#                                         color = "white"),
+#         axis.line = element_line(colour = "black"), 
+#         axis.text = element_text(size=12),
+#         axis.title.x = element_text(size = 12),
+#         axis.text.x=element_text(),
+#         axis.text.y=element_text(color='black'),
+#         title = element_text(size = 12),
+#         strip.placement = "outside",
+#         strip.background = element_blank(),
+#         strip.text = element_text(size = 12)) +
+#   labs(x = "time (min)", y = "area", title = "DMNT")
+# 
+# plot4
+
+
+neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
+dat_26 <- arrange(mutate(dat_25,
+             compound = factor(compound,levels=neworder)),compound)
+
+
+plot5 <- ggplot(dat_26, aes(x = time_min, y = area, color = segment)) +
+  facet_wrap(~ compound, scales = "free_y") +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+  scale_fill_manual(labels = c("proximal",
+                               "local",
+                               "distal"),
+                    breaks = c("S1", "S2", "S3")) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot5
+# 
+# plot1
+# plot2
+# plot3
+# plot4
+# plot5
+
+```
+
+```{r}
+# plot dat4:
+
+pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
+dat_47 <- arrange(mutate(dat_46,
+             compound = factor(Compound,levels=neworder)),Compound)
+
+plot4 <- ggplot(dat_47, aes(x = time_min, y = quant, color = segment)) +
+  facet_wrap(~ compound, scales = "free_y") +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+  scale_fill_manual(labels = c("proximal",
+                               "local",
+                               "distal"),
+                    breaks = c("S1", "S2", "S3")) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot4
+```
+
+```{r}
+# plot combined dat:
+
+pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
+          "#ffb703","#fd9e02", "#fb8500")
+
+dat_all <- dat_all |>
+  mutate(date = as.factor(date),
+         segment = as.factor(segment),
+         iteration = as.factor(iteration),
+         Compound = as.factor(Compound))
+
+dat_plot <- dat_all |>
+  group_by(segment, iteration, Compound) |>
+  mutate(mean_a = mean(quant),
+         se_a = se(quant))
+
+neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
+dat_plot1 <- arrange(mutate(dat_plot,
+             compound = factor(Compound,levels=neworder)),Compound)
+
+plot5 <- ggplot(dat_plot1, aes(x = time_min, y = mean_a, color = segment)) +
+  facet_wrap(~ compound, scales = "free_y") +
+  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+  scale_fill_manual(labels = c("proximal",
+                               "local",
+                               "distal"),
+                    breaks = c("S1", "S2", "S3")) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot5
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
