@@ -9,7 +9,7 @@ output: html_document
 ```{r}
 library(ggplot2)
 library(dplyr)
-library(tidyr)
+library(tidyverse)
 ```
 
 # Define Functions
@@ -20,25 +20,59 @@ fun_hal <- function (x) {(x - (-286.8851)) / 65.1187}
 fun_hol <- function (x) {(x - 284.2803) / 422.3727}
 fun_hac <- function (x) {(x - 249.5578) / 839.3971}
 ```
+
+```{r}
+fun_process_data <- function(dat) {  # this function wrangles data coming from the online software
+  
+  dat |>
+    filter(!grepl("(B1|B2)$", Sample)) |>  # remove blanks
+    mutate(
+      area = ifelse(is.na(Area), 0, Area)  # set NA (=not detected) as 0
+    ) |>
+    select(  # exclude two unnecessary columns
+      -Qualifier_Status,
+      -Qualifier_Message
+    ) |>
+    separate(  # separate the column Sample into columns date, segment, iteration
+      col = Sample,
+      into = c("date", "segment", "iteration"),
+      sep = "_"
+    ) |>
+    mutate(  # convert iteration to minutes -> one iteration lasts 45 mins, every segment takes 15 mins to measure, so we average the time
+      iteration = as.numeric(iteration),
+      time_min = iteration * 45 - 22,
+      quant = ifelse(
+        Compound == "HAL", fun_hal(area),
+        ifelse(
+          Compound == "HOL", fun_hol(area),
+          ifelse(Compound == "HAC", fun_hac(area), area)
+        )
+      ),
+      quant = ifelse(area == 0, 0, quant)
+    )
+}
+```
+
+
 # 20260622
 ## Load data
 ```{r}
-dat_5 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260810_results.csv",
+dat_1 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260810_results.csv",
                   header = T, sep = ",")
 
-dat_6 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260811_results.csv",
+dat_2 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260811_results.csv",
                   header = T, sep = ",")
 
-dat_7 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260812_results.csv",
+dat_3 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260812_results.csv",
                   header = T, sep = ",")
 
-dat_8 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260813_results.csv",
+dat_4 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260813_results.csv",
                   header = T, sep = ",")
 
-dat_9 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260814_results.csv",
+dat_5 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260814_results.csv",
                   header = T, sep = ",")
 
-dat_101 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_results.csv",
+dat_6 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_results.csv",
                   header = T, sep = ",")
 
 ```
@@ -46,179 +80,25 @@ dat_101 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_resul
 # wrangle data
 
 ```{r}
-#dat 10.08.2026
-dat_41 <- dat_5[11:205,]
+for (i in 1:6) {
+  
+  input <- get(paste0("dat_", i))
+  
+  output <- fun_process_data(input)
+  
+  assign(paste0("dat_", i + 10), output)
+}
 
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area))
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_10 <- dat_46
 ```
-
-```{r}
-#dat 11.08.2026
-dat_41 <- dat_6[11:190,]
-
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area))
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_11 <- dat_46
-```
-
-```{r}
-#dat 12.08.2026
-dat_41 <- dat_7[11:205,]
-
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area))
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_12 <- dat_46
-```
-
-
-```{r}
-#dat 13.08.2026
-dat_41 <- dat_8[11:205,]
-
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area)) 
-# |>
-#   select(-Qualifier_Status, -Qualifier_Message)
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_13 <- dat_46
-```
-
-
-```{r}
-#dat 14.08.2026
-dat_41 <- dat_9[11:205,]
-
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area)) 
-# |>
-#   select(-Qualifier_Status, -Qualifier_Message)
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_14 <- dat_46
-```
-
-```{r}
-#dat 17.08.2026
-dat_41 <- dat_101[11:205,]
-
-dat_42 <- dat_41 |>
-  mutate(area = ifelse(is.na(Area), 0, Area)) 
-# |>
-#   select(-Qualifier_Status, -Qualifier_Message)
-
-dat_43 <- dat_42 |>
-  separate(col=Sample, into=c("date", "segment", "iteration"), sep = "_")
-
-dat_43$iteration <- as.numeric(dat_43$iteration)
-
-dat_44 <- dat_43 |>
-  mutate(time_min = iteration * 45 - 22 ) # time after wounding (minutes), this is the middle of the iteration bc each chamber took around 15 mins to measure
-
-dat_45 <- dat_44 |>
-  mutate(quant = ifelse(Compound == "HAL", fun_hal(area),
-                        ifelse(Compound == "HOL", fun_hol(area),
-                               ifelse(Compound == "HAC", fun_hac(area), area))))
-
-dat_46 <- dat_45 |>
-  mutate(quant = ifelse(area == 0, 0, quant))
-
-dat_15 <- dat_46
-```
-
 
 ```{r}
 # combine dfs
 
-dat_all <- rbind(dat_10, dat_11, dat_12, dat_13, dat_14, dat_15)
+dat_all <- rbind(dat_11, dat_12, dat_13, dat_14, dat_15, dat_16)
 ```
 
 
 ## Plot
-
 ```{r}
 # plot combined dat:
 
@@ -237,7 +117,7 @@ dat_plot <- dat_all |>
          se_a = se(quant))
 
 neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
-dat_plot1 <- arrange(mutate(dat_plot,
+dat_plot1 <- arrange(mutate(dat_plot_from_fun,
              compound = factor(Compound,levels=neworder)),Compound)
 
 plot5 <- ggplot(dat_plot1, aes(x = time_min, y = mean_a, color = segment)) +
