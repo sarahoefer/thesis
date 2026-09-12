@@ -13,12 +13,23 @@ library(DESeq2)
 library(dplyr)
 library(RColorBrewer) # to change colors in pheatmap
 library(tidyverse)
+library(tibble)
+library(scales)
 
 ## to install DESeq2:
 # if (!require("BiocManager", quietly = TRUE))
 #     install.packages("BiocManager")
 # 
 # BiocManager::install("DESeq2")
+
+# bioconductor:
+
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("topGO")
+
+library(topGO)
 ```
 
 # 2. Functions
@@ -31,20 +42,25 @@ se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
 ## 3.1. Load data
 
 ```{r}
-dat_raw_counts <- read.table("03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_counts.tsv",
+dat_raw_counts <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_counts.tsv",
                              header = T, row.names = 1, sep = "\t")
 
-dat_fpkm <- read.table("03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_fpkm_all_samples.tsv",
+dat_fpkm <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_fpkm_all_samples.tsv",
                              header = T, row.names = 1, sep = "\t")
 
-dat_goi <- read.table("03_local_response_RNAseq/01_data/tristan_heatmap_gene_categories.csv",
+dat_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/tristan_heatmap_gene_categories.csv",
                       header = T, sep = ",")
 
-dat_phytohormone_goi <- read.table("03_local_response_RNAseq/01_data/phytohormone_candidates_gene_list.csv",
+dat_phytohormone_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/phytohormone_candidates_gene_list.csv",
                                    header = T, sep = ",")
 
-dat_meta <- read.table("03_local_response_RNAseq/01_data/within_leaf_analysis_ready_info.csv",
+dat_meta <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_info.csv",
                              header = T, sep = ",")
+
+dat_b73_go <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/B73_GO.out",
+                         quote = '"',
+                             header = T, sep = "\t",
+                         colClasses = c('goid' = 'character', 'qpid' = 'character'))
 ```
 
 ## 3.2. Wrangle data
@@ -61,9 +77,9 @@ dat_ph_goi <- dat_phytohormone_goi |>
   mutate(Gene_ID = Gene_ID_v5)
 ```
 
-
-# 4. Heatmap
-## 4.1. DESeq2 for heatmap
+# 4. Differential Expression Analyses:
+## 4.1. Heatmap
+### 4.1.1 DESeq2 for heatmap
 
 ```{r}
 
@@ -205,9 +221,9 @@ for (name in c(
 }
 ```
 
-# 5. Barplots log-fold change
+## 4.2. Barplots log-fold change
 
-## 5.1. Subset of genes
+### 4.2.1. Subset of genes
 
 Loop for everything from ChatGPT:
 
@@ -598,16 +614,1952 @@ fig_S3
 # dev.off()
 ```
 
-## 5.2. All genes
+# 4.3. All genes
+Find all genes that have significantly different lfc between mutant and wt, for both mutants, per segment, and positive and negative
 
-Find all genes that have significantly different lfc between mutant and wt, for both mutants, per segment
 
 ```{r}
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+# Make sure count matrix follows metadata order
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta)]
+
+# Factors
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+
+
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+make_gene_list <- function(segment_name,
+                              counts,
+                              metadata,
+                              padj_cutoff = 0.05) {
+  
+  # -------------------------------------------------------
+  # 1. Subset metadata and counts for this segment
+  # -------------------------------------------------------
+  
+  meta_seg <- metadata %>%
+    filter(segment == segment_name)
+  
+  counts_seg <- counts[, rownames(meta_seg)]
+  
+  
+  # -------------------------------------------------------
+  # 2. Create DESeq2 object
+  # -------------------------------------------------------
+  
+  dds <- DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group +
+              genotype:condition_group
+  )
+  
+  
+  # -------------------------------------------------------
+  # 3. Filter low-count genes
+  # -------------------------------------------------------
+  
+  keep <- rowSums(counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+  
+  
+  # -------------------------------------------------------
+  # 4. Run DESeq2
+  # -------------------------------------------------------
+  
+  dds <- DESeq(dds)
+  
+  
+  # -------------------------------------------------------
+  # 5. Interaction tests
+  #
+  # Does the C-vs-W response differ between:
+  #   WT vs lox
+  #   WT vs haci
+  # -------------------------------------------------------
+  
+  res_lox_interaction <- results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  res_haci_interaction <- results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  res_lox_df <- as.data.frame(res_lox_interaction) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "lox10_vs_WT"
+)
+
+res_haci_df <- as.data.frame(res_haci_interaction) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "haci_vs_WT"
+)
+  
+  # -------------------------------------------------------
+  # 6. Significant interaction genes
+  # -------------------------------------------------------
+  
+sig_lox <- res_lox_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+sig_haci <- res_haci_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+  lox10_positive <- sig_lox %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+haci_positive <- sig_haci %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+lox10_negative <- sig_lox %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+haci_negative <- sig_haci %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+either_mutant <- union(
+sig_lox$Gene_ID,
+sig_haci$Gene_ID
+)
+  
+either_mutant_positive <- union(
+lox10_positive,
+haci_positive
+)
+
+either_mutant_negative <- union(
+lox10_negative,
+haci_negative
+)
+  
+ 
+  # -------------------------------------------------------
+  # 8. Get C vs W effect for WT
+  # -------------------------------------------------------
+  
+  res_WT <- results(
+    dds,
+    contrast = c(
+      "condition_group",
+      "c",
+      "w"
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 9. Get C vs W effect for lox
+  # -------------------------------------------------------
+  
+  res_lox <- results(
+    dds,
+    contrast = list(
+      c(
+        "condition_group_c_vs_w",
+        "genotypelox.condition_groupc"
+      )
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 10. Get C vs W effect for haci
+  # -------------------------------------------------------
+  
+  res_haci <- results(
+    dds,
+    contrast = list(
+      c(
+        "condition_group_c_vs_w",
+        "genotypehaci.condition_groupc"
+      )
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 11. Create plotting dataframe
+  #
+  # Keep both log2FC and lfcSE
+  # -------------------------------------------------------
+  
+  plot_data <- bind_rows(
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "WT",
+      log2FC = res_WT[sig_genes, "log2FoldChange"],
+      lfcSE = res_WT[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "lox",
+      log2FC = res_lox[sig_genes, "log2FoldChange"],
+      lfcSE = res_lox[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "haci",
+      log2FC = res_haci[sig_genes, "log2FoldChange"],
+      lfcSE = res_haci[sig_genes, "lfcSE"]
+    )
+  )
+  
+  # ------------------------------------------------------- 
+  # 12. Add interaction p-values to plotting data
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    padj_lox_vs_WT = res_lox_interaction[Gene_ID, "padj"],
+    padj_haci_vs_WT = res_haci_interaction[Gene_ID, "padj"]
+  )
+  
+  
+  # -------------------------------------------------------
+  # 13. Create a significance label:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    significance = case_when(
+      genotype == "lox" & padj_lox_vs_WT < 0.001  ~ "***",
+      genotype == "lox" & padj_lox_vs_WT < 0.01   ~ "**",
+      genotype == "lox" & padj_lox_vs_WT < 0.05   ~ "*",
+      
+      genotype == "haci" & padj_haci_vs_WT < 0.001  ~ "***",
+      genotype == "haci" & padj_haci_vs_WT < 0.01   ~ "**",
+      genotype == "haci" & padj_haci_vs_WT < 0.05   ~ "*",
+      
+      TRUE ~ ""
+    )
+  )
+  
+  # -------------------------------------------------------
+  # 14. Calculate vjust in data:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    star_y = ifelse(
+      log2FC >= 0,
+      log2FC + 1.96 * lfcSE,
+      log2FC - 1.96 * lfcSE
+    ),
+    star_vjust = ifelse(
+      log2FC >= 0,
+      -0.3,
+      1.3
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 15. Add gene names
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+    left_join(
+      goi %>%
+        select(Gene_ID, gene_name),
+      by = "Gene_ID"
+    )
+  
+  
+  # -------------------------------------------------------
+  # 16. Plot
+  # -------------------------------------------------------
+  
+  p <- ggplot(
+    plot_data,
+    aes(
+      x = gene_name,
+      y = log2FC,
+      fill = genotype
+    )
+  ) +
+    
+    geom_col(
+      position = position_dodge(width = 0.8)
+    ) +
+    
+    geom_errorbar(
+      aes(
+        ymin = log2FC - 1.96 * lfcSE,
+        ymax = log2FC + 1.96 * lfcSE
+      ),
+      position = position_dodge(width = 0.8),
+      width = 0.25
+    ) +
+    
+    geom_text(
+      aes(
+        label = significance,
+        y = star_y,
+        vjust = star_vjust
+      ),
+      position = position_dodge(width = 0.8),
+      size = 4
+    ) +
+    
+    geom_hline(
+      yintercept = 0,
+      linewidth = 0.5
+    ) +
+    
+    theme_classic() +
+    
+    labs(
+      title = segment_name,
+      x = NULL,
+      y = "log2 fold change (C vs W)",
+      fill = "Genotype"
+    ) +
+    
+    theme(
+      axis.text.x = element_text(
+        angle = 90,
+        hjust = 1,
+        vjust = 0.5
+      )
+    )
+  
+  
+  # -------------------------------------------------------
+  # 17. Return everything
+  # -------------------------------------------------------
+  
+  return(
+    list(
+      dds = dds,
+      significant_genes = sig_genes,
+      interaction_lox = res_lox_interaction,
+      interaction_haci = res_haci_interaction,
+      plot_data = plot_data,
+      plot = p
+    )
+  )
+}
+```
+
+
+```{r}
+segments <- levels(dat_meta$segment)
+
+DE_results <- lapply(
+segments,
+function(seg) {
+
+message("Running segment: ", seg)
+
+run_segment_interaction(
+  segment_name = seg,
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  padj_cutoff = 0.05
+)
+
+}
+)
+
+names(DE_results) <- segments
+
+---------------------------------------------------------
+Gene vectors for topGO
+---------------------------------------------------------
+
+S1_lox10_positive <- DE_results$S1$lox10_positive
+S1_lox10_negative <- DE_results$S1$lox10_negative
+S1_haci_positive <- DE_results$S1$haci_positive
+S1_haci_negative <- DE_results$S1$haci_negative
+S1_mutant_genes <- DE_results$S1$either_mutant
+S1_mutant_positive <- DE_results$S1$either_mutant_positive
+S1_mutant_negative <- DE_results$S1$either_mutant_negative
+
+S2_lox10_positive <- DE_results$S2$lox10_positive
+S2_lox10_negative <- DE_results$S2$lox10_negative
+S2_haci_positive <- DE_results$S2$haci_positive
+S2_haci_negative <- DE_results$S2$haci_negative
+S2_mutant_genes <- DE_results$S2$either_mutant
+S2_mutant_positive <- DE_results$S2$either_mutant_positive
+S2_mutant_negative <- DE_results$S2$either_mutant_negative
+
+S3_lox10_positive <- DE_results$S3$lox10_positive
+S3_lox10_negative <- DE_results$S3$lox10_negative
+S3_haci_positive <- DE_results$S3$haci_positive
+S3_haci_negative <- DE_results$S3$haci_negative
+S3_mutant_genes <- DE_results$S3$either_mutant
+S3_mutant_positive <- DE_results$S3$either_mutant_positive
+S3_mutant_negative <- DE_results$S3$either_mutant_negative
+
+---------------------------------------------------------
+Named list for topGO
+---------------------------------------------------------
+
+topGO_genes <- list(
+S1 = list(
+lox10_positive = S1_lox10_positive,
+lox10_negative = S1_lox10_negative,
+haci_positive = S1_haci_positive,
+haci_negative = S1_haci_negative,
+either_mutant = S1_mutant_genes,
+either_mutant_positive = S1_mutant_positive,
+either_mutant_negative = S1_mutant_negative
+),
+
+S2 = list(
+lox10_positive = S2_lox10_positive,
+lox10_negative = S2_lox10_negative,
+haci_positive = S2_haci_positive,
+haci_negative = S2_haci_negative,
+either_mutant = S2_mutant_genes,
+either_mutant_positive = S2_mutant_positive,
+either_mutant_negative = S2_mutant_negative
+),
+
+S3 = list(
+lox10_positive = S3_lox10_positive,
+lox10_negative = S3_lox10_negative,
+haci_positive = S3_haci_positive,
+haci_negative = S3_haci_negative,
+either_mutant = S3_mutant_genes,
+either_mutant_positive = S3_mutant_positive,
+either_mutant_negative = S3_mutant_negative
+)
+)
+
+---------------------------------------------------------
+Number of genes in each list
+---------------------------------------------------------
+
+gene_counts <- do.call(
+rbind,
+lapply(
+topGO_genes,
+function(x) {
+sapply(x, length)
+}
+)
+)
+
+gene_counts
+
+---------------------------------------------------------
+Combined significant results
+---------------------------------------------------------
+
+all_significant <- bind_rows(
+lapply(
+DE_results,
+function(x) {
+bind_rows(
+x$significant_lox10_vs_WT,
+x$significant_haci_vs_WT
+)
+}
+)
+)
+
+write.csv(
+all_significant,
+"DESeq2_interaction_all_segments.csv",
+row.names = FALSE
+)
+```
+
+```{r}
+
+run_segment_interaction <- function(
+segment_name,
+counts,
+metadata,
+padj_cutoff = 0.05
+) {
+
+meta_seg <- metadata %>%
+filter(segment == segment_name)
+
+counts_seg <- counts[, rownames(meta_seg), drop = FALSE]
+
+dds <- DESeqDataSetFromMatrix(
+countData = round(as.matrix(counts_seg)),
+colData = meta_seg,
+design = ~ genotype + condition_group +
+genotype:condition_group
+)
+
+keep <- rowSums(counts(dds) >= 10) >= 2
+dds <- dds[keep, ]
+
+dds <- DESeq(dds)
+
+C vs W response difference: lox10 vs WT
+
+res_lox <- results(
+dds,
+name = "genotypelox.condition_groupc"
+)
+
+C vs W response difference: haci vs WT
+
+res_haci <- results(
+dds,
+name = "genotypehaci.condition_groupc"
+)
+
+res_lox_df <- as.data.frame(res_lox) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "lox10_vs_WT"
+)
+
+res_haci_df <- as.data.frame(res_haci) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "haci_vs_WT"
+)
+
+Significant lox10 interaction genes
+
+sig_lox <- res_lox_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+Significant haci interaction genes
+
+sig_haci <- res_haci_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+Positive interaction
+
+lox10_positive <- sig_lox %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+haci_positive <- sig_haci %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+Negative interaction
+
+lox10_negative <- sig_lox %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+haci_negative <- sig_haci %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+Either mutant
+
+either_mutant <- union(
+sig_lox$Gene_ID,
+sig_haci$Gene_ID
+)
+
+Either mutant, separated by direction
+
+either_mutant_positive <- union(
+lox10_positive,
+haci_positive
+)
+
+either_mutant_negative <- union(
+lox10_negative,
+haci_negative
+)
+
+return(
+list(
+dds = dds,
+
+  lox10_vs_WT = res_lox_df,
+  haci_vs_WT = res_haci_df,
+  
+  significant_lox10_vs_WT = sig_lox,
+  significant_haci_vs_WT = sig_haci,
+  
+  lox10_positive = lox10_positive,
+  lox10_negative = lox10_negative,
+  
+  haci_positive = haci_positive,
+  haci_negative = haci_negative,
+  
+  either_mutant = either_mutant,
+  either_mutant_positive = either_mutant_positive,
+  either_mutant_negative = either_mutant_negative
+)
+
+)
+}
+
+---------------------------------------------------------
+Run for all segments
+---------------------------------------------------------
+
+segments <- levels(dat_meta$segment)
+
+DE_results <- lapply(
+segments,
+function(seg) {
+
+message("Running segment: ", seg)
+
+run_segment_interaction(
+  segment_name = seg,
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  padj_cutoff = 0.05
+)
+
+}
+)
+
+names(DE_results) <- segments
+
+---------------------------------------------------------
+Gene vectors for topGO
+---------------------------------------------------------
+
+S1_lox10_positive <- DE_results$S1$lox10_positive
+S1_lox10_negative <- DE_results$S1$lox10_negative
+S1_haci_positive <- DE_results$S1$haci_positive
+S1_haci_negative <- DE_results$S1$haci_negative
+S1_mutant_genes <- DE_results$S1$either_mutant
+S1_mutant_positive <- DE_results$S1$either_mutant_positive
+S1_mutant_negative <- DE_results$S1$either_mutant_negative
+
+S2_lox10_positive <- DE_results$S2$lox10_positive
+S2_lox10_negative <- DE_results$S2$lox10_negative
+S2_haci_positive <- DE_results$S2$haci_positive
+S2_haci_negative <- DE_results$S2$haci_negative
+S2_mutant_genes <- DE_results$S2$either_mutant
+S2_mutant_positive <- DE_results$S2$either_mutant_positive
+S2_mutant_negative <- DE_results$S2$either_mutant_negative
+
+S3_lox10_positive <- DE_results$S3$lox10_positive
+S3_lox10_negative <- DE_results$S3$lox10_negative
+S3_haci_positive <- DE_results$S3$haci_positive
+S3_haci_negative <- DE_results$S3$haci_negative
+S3_mutant_genes <- DE_results$S3$either_mutant
+S3_mutant_positive <- DE_results$S3$either_mutant_positive
+S3_mutant_negative <- DE_results$S3$either_mutant_negative
+
+---------------------------------------------------------
+Named list for topGO
+---------------------------------------------------------
+
+topGO_genes <- list(
+S1 = list(
+lox10_positive = S1_lox10_positive,
+lox10_negative = S1_lox10_negative,
+haci_positive = S1_haci_positive,
+haci_negative = S1_haci_negative,
+either_mutant = S1_mutant_genes,
+either_mutant_positive = S1_mutant_positive,
+either_mutant_negative = S1_mutant_negative
+),
+
+S2 = list(
+lox10_positive = S2_lox10_positive,
+lox10_negative = S2_lox10_negative,
+haci_positive = S2_haci_positive,
+haci_negative = S2_haci_negative,
+either_mutant = S2_mutant_genes,
+either_mutant_positive = S2_mutant_positive,
+either_mutant_negative = S2_mutant_negative
+),
+
+S3 = list(
+lox10_positive = S3_lox10_positive,
+lox10_negative = S3_lox10_negative,
+haci_positive = S3_haci_positive,
+haci_negative = S3_haci_negative,
+either_mutant = S3_mutant_genes,
+either_mutant_positive = S3_mutant_positive,
+either_mutant_negative = S3_mutant_negative
+)
+)
+
+---------------------------------------------------------
+Number of genes in each list
+---------------------------------------------------------
+
+gene_counts <- do.call(
+rbind,
+lapply(
+topGO_genes,
+function(x) {
+sapply(x, length)
+}
+)
+)
+
+gene_counts
+
+---------------------------------------------------------
+Combined significant results
+---------------------------------------------------------
+
+all_significant <- bind_rows(
+lapply(
+DE_results,
+function(x) {
+bind_rows(
+x$significant_lox10_vs_WT,
+x$significant_haci_vs_WT
+)
+}
+)
+)
+
+write.csv(
+all_significant,
+"DESeq2_interaction_all_segments.csv",
+row.names = FALSE
+)
+```
+
+```{r}
+# =========================================================
+
+# DESeq2 interaction analysis for all segments
+
+#
+
+# Question:
+
+# For each segment, which genes show a different
+
+# C-vs-W response in:
+
+#
+
+# 1. lox10 vs WT
+
+# 2. haci vs WT
+
+#
+
+# Also split significant genes by direction:
+
+#
+
+# positive interaction = stronger/more positive C-vs-W
+
+# response in mutant compared with WT
+
+#
+
+# negative interaction = weaker/more negative C-vs-W
+
+# response in mutant compared with WT
+
+#
+
+# Output gene vectors are ready for topGO.
+
+# =========================================================
+
+# ---------------------------------------------------------
+
+# Packages
+
+# ---------------------------------------------------------
+# 
+# library(DESeq2)
+# library(dplyr)
+# library(tibble)
+
+# ---------------------------------------------------------
+
+# Prepare metadata
+
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+# Make sure count matrix follows metadata order
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta)]
+
+# ---------------------------------------------------------
+
+# Factors
+
+# ---------------------------------------------------------
+
+dat_meta$genotype <- factor(
+dat_meta$genotype,
+levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+dat_meta$condition_group,
+levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+dat_meta$segment,
+levels = c("S1", "S2", "S3")
+)
+
+# =========================================================
+
+# Function: run DESeq2 interaction analysis for ONE segment
+
+# =========================================================
+
+run_segment_interaction <- function(
+segment_name,
+counts,
+metadata,
+padj_cutoff = 0.05
+) {
+
+# -------------------------------------------------------
+
+# 1. Subset metadata and counts for this segment
+
+# -------------------------------------------------------
+
+meta_seg <- metadata %>%
+filter(segment == segment_name)
+
+counts_seg <- counts[, rownames(meta_seg), drop = FALSE]
+
+# -------------------------------------------------------
+
+# 2. Create DESeq2 object
+
+#
+
+# Model:
+
+#
+
+# genotype + condition + genotype:condition
+
+#
+
+# This allows us to test whether the C-vs-W response
+
+# differs between WT and each mutant.
+
+# -------------------------------------------------------
+
+dds <- DESeqDataSetFromMatrix(
+countData = round(as.matrix(counts_seg)),
+colData = meta_seg,
+design = ~ genotype + condition_group +
+genotype:condition_group
+)
+
+# -------------------------------------------------------
+
+# 3. Filter low-count genes
+
+# -------------------------------------------------------
+
+keep <- rowSums(counts(dds) >= 10) >= 2
+
+dds <- dds[keep, ]
+
+# -------------------------------------------------------
+
+# 4. Run DESeq2
+
+# -------------------------------------------------------
+
+dds <- DESeq(dds)
+
+# =======================================================
+
+# 5. WT vs lox10 interaction
+
+# =======================================================
+
+#
+
+# This tests:
+
+#
+
+# (lox10 C - lox10 W)
+
+#
+
+# versus
+
+#
+
+# (WT C - WT W)
+
+#
+
+# Positive log2FC:
+
+# C-vs-W response is more positive in lox10
+
+#
+
+# Negative log2FC:
+
+# C-vs-W response is more negative in lox10
+
+# =======================================================
+
+res_lox <- results(
+dds,
+name = "genotypelox.condition_groupc"
+)
+
+# =======================================================
+
+# 6. WT vs haci interaction
+
+# =======================================================
+
+res_haci <- results(
+dds,
+name = "genotypehaci.condition_groupc"
+)
+
+# -------------------------------------------------------
+
+# 7. Convert results to data frames
+
+# -------------------------------------------------------
+
+res_lox_df <- as.data.frame(res_lox) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "lox10_vs_WT"
+)
+
+res_haci_df <- as.data.frame(res_haci) %>%
+rownames_to_column("Gene_ID") %>%
+mutate(
+segment = segment_name,
+comparison = "haci_vs_WT"
+)
+
+# =======================================================
+
+# 8. Significant lox10 interaction genes
+
+# =======================================================
+
+sig_lox <- res_lox_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+# -------------------------------------------------------
+
+# Split lox10 genes by interaction direction
+
+# -------------------------------------------------------
+
+lox10_positive <- sig_lox %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+lox10_negative <- sig_lox %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+# =======================================================
+
+# 9. Significant haci interaction genes
+
+# =======================================================
+
+sig_haci <- res_haci_df %>%
+filter(
+!is.na(padj),
+padj < padj_cutoff
+)
+
+# -------------------------------------------------------
+
+# Split haci genes by interaction direction
+
+# -------------------------------------------------------
+
+haci_positive <- sig_haci %>%
+filter(log2FoldChange > 0) %>%
+pull(Gene_ID)
+
+haci_negative <- sig_haci %>%
+filter(log2FoldChange < 0) %>%
+pull(Gene_ID)
+
+# =======================================================
+
+# 10. All significant genes in either mutant
+
+# =======================================================
+
+either_mutant <- union(
+sig_lox$Gene_ID,
+sig_haci$Gene_ID
+)
+
+# -------------------------------------------------------
+
+# Directional combined lists
+
+# -------------------------------------------------------
+
+#
+
+# Positive in either mutant
+
+# -------------------------------------------------------
+
+either_mutant_positive <- union(
+lox10_positive,
+haci_positive
+)
+
+# -------------------------------------------------------
+
+# Negative in either mutant
+
+# -------------------------------------------------------
+
+either_mutant_negative <- union(
+lox10_negative,
+haci_negative
+)
+
+# =======================================================
+
+# 11. Return everything
+
+# =======================================================
+
+return(
+list(
+
+
+  # -----------------------------------------------
+  # DESeq2 object
+  # -----------------------------------------------
+  
+  dds = dds,
+  
+  
+  # -----------------------------------------------
+  # Complete interaction results
+  # -----------------------------------------------
+  
+  lox10_vs_WT = res_lox_df,
+  haci_vs_WT = res_haci_df,
+  
+  
+  # -----------------------------------------------
+  # Significant results as data frames
+  # -----------------------------------------------
+  
+  significant_lox10_vs_WT = sig_lox,
+  significant_haci_vs_WT = sig_haci,
+  
+  
+  # -----------------------------------------------
+  # Gene vectors
+  # -----------------------------------------------
+  
+  lox10_positive = lox10_positive,
+  lox10_negative = lox10_negative,
+  
+  haci_positive = haci_positive,
+  haci_negative = haci_negative,
+  
+  either_mutant = either_mutant,
+  
+  either_mutant_positive = either_mutant_positive,
+  either_mutant_negative = either_mutant_negative
+  
+)
+
+
+)
+}
+
+# =========================================================
+
+# Run analysis for ALL segments
+
+# =========================================================
+
+segments <- levels(dat_meta$segment)
+
+DE_results <- lapply(
+
+segments,
+
+function(seg) {
+
+message("========================================")
+message("Running DESeq2 for segment: ", seg)
+message("========================================")
+
+run_segment_interaction(
+  segment_name = seg,
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  padj_cutoff = 0.05
+)
+
+
+}
+)
+
+# Give each segment its name
+
+names(DE_results) <- segments
+
+# =========================================================
+
+# Extract gene vectors for topGO
+
+# =========================================================
+
+# ---------------------------------------------------------
+
+# S1
+
+# ---------------------------------------------------------
+
+S1_lox10_positive <- DE_results$S1$lox10_positive
+S1_lox10_negative <- DE_results$S1$lox10_negative
+
+S1_haci_positive <- DE_results$S1$haci_positive
+S1_haci_negative <- DE_results$S1$haci_negative
+
+S1_mutant_genes <- DE_results$S1$either_mutant
+
+S1_mutant_positive <- DE_results$S1$either_mutant_positive
+S1_mutant_negative <- DE_results$S1$either_mutant_negative
+
+# ---------------------------------------------------------
+
+# S2
+
+# ---------------------------------------------------------
+
+S2_lox10_positive <- DE_results$S2$lox10_positive
+S2_lox10_negative <- DE_results$S2$lox10_negative
+
+S2_haci_positive <- DE_results$S2$haci_positive
+S2_haci_negative <- DE_results$S2$haci_negative
+
+S2_mutant_genes <- DE_results$S2$either_mutant
+
+S2_mutant_positive <- DE_results$S2$either_mutant_positive
+S2_mutant_negative <- DE_results$S2$either_mutant_negative
+
+# ---------------------------------------------------------
+
+# S3
+
+# ---------------------------------------------------------
+
+S3_lox10_positive <- DE_results$S3$lox10_positive
+S3_lox10_negative <- DE_results$S3$lox10_negative
+
+S3_haci_positive <- DE_results$S3$haci_positive
+S3_haci_negative <- DE_results$S3$haci_negative
+
+S3_mutant_genes <- DE_results$S3$either_mutant
+
+S3_mutant_positive <- DE_results$S3$either_mutant_positive
+S3_mutant_negative <- DE_results$S3$either_mutant_negative
+
+# =========================================================
+
+# Convenient named list for topGO
+
+# =========================================================
+
+topGO_genes <- list(
+
+S1 = list(
+lox10_positive = S1_lox10_positive,
+lox10_negative = S1_lox10_negative,
+haci_positive = S1_haci_positive,
+haci_negative = S1_haci_negative,
+either_mutant = S1_mutant_genes,
+either_mutant_positive = S1_mutant_positive,
+either_mutant_negative = S1_mutant_negative
+),
+
+S2 = list(
+lox10_positive = S2_lox10_positive,
+lox10_negative = S2_lox10_negative,
+haci_positive = S2_haci_positive,
+haci_negative = S2_haci_negative,
+either_mutant = S2_mutant_genes,
+either_mutant_positive = S2_mutant_positive,
+either_mutant_negative = S2_mutant_negative
+),
+
+S3 = list(
+lox10_positive = S3_lox10_positive,
+lox10_negative = S3_lox10_negative,
+haci_positive = S3_haci_positive,
+haci_negative = S3_haci_negative,
+either_mutant = S3_mutant_genes,
+either_mutant_positive = S3_mutant_positive,
+either_mutant_negative = S3_mutant_negative
+)
+)
+
+# =========================================================
+
+# Check how many genes are in each list
+
+# =========================================================
+
+gene_counts <- do.call(
+rbind,
+lapply(
+names(topGO_genes),
+function(seg) {
+
+
+  sapply(
+    topGO_genes[[seg]],
+    length
+  )
+}
+
+
+)
+)
+
+gene_counts
+
+# =========================================================
+
+# Optional: save complete significant results
+
+# =========================================================
+
+all_significant <- bind_rows(
+
+lapply(
+DE_results,
+function(x) {
+
+
+  bind_rows(
+    x$significant_lox10_vs_WT,
+    x$significant_haci_vs_WT
+  )
+}
+
+
+)
+)
+
+write.csv(
+all_significant,
+"DESeq2_interaction_all_segments.csv",
+row.names = FALSE
+)
 
 ```
 
 
+```{r}
+# library(DESeq2)
+# library(dplyr)
+# library(tibble)
+
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta), drop = FALSE]
+
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
 
 
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+run_segment_interaction <- function(
+    segment_name,
+    counts,
+    metadata,
+    padj_cutoff = 0.05
+) {
+  
+  # Subset metadata using the actual column
+  meta_seg <- metadata[
+    as.character(metadata$segment) == segment_name,
+    ,
+    drop = FALSE
+  ]
+  
+  # Make sure sample names match
+  meta_seg <- meta_seg[
+    rownames(meta_seg) %in% colnames(counts),
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- counts[, rownames(meta_seg), drop = FALSE]
+  
+  # Make sure order is identical
+  counts_seg <- counts_seg[, rownames(meta_seg), drop = FALSE]
+  
+  # Remove unused factor levels
+  meta_seg$genotype <- droplevels(meta_seg$genotype)
+  meta_seg$condition_group <- droplevels(meta_seg$condition_group)
+  
+  # DESeq2 object
+  dds <- DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group +
+      genotype:condition_group
+  )
+  
+  # Low-count filtering
+  keep <- rowSums(counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+  
+  # Run DESeq2
+  dds <- DESeq(dds)
+  
+  # -------------------------------------------------------
+  # Interaction tests
+  # -------------------------------------------------------
+  
+  res_lox <- results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  res_haci <- results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  # -------------------------------------------------------
+  # Convert to data frames
+  # -------------------------------------------------------
+  
+  res_lox_df <- as.data.frame(res_lox)
+  res_lox_df$Gene_ID <- rownames(res_lox_df)
+  rownames(res_lox_df) <- NULL
+  
+  res_lox_df$segment <- segment_name
+  res_lox_df$comparison <- "lox10_vs_WT"
+  
+  res_haci_df <- as.data.frame(res_haci)
+  res_haci_df$Gene_ID <- rownames(res_haci_df)
+  rownames(res_haci_df) <- NULL
+  
+  res_haci_df$segment <- segment_name
+  res_haci_df$comparison <- "haci_vs_WT"
+  
+  # -------------------------------------------------------
+  # Significant genes
+  # -------------------------------------------------------
+  
+  sig_lox <- res_lox_df[
+    !is.na(res_lox_df$padj) &
+      res_lox_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  sig_haci <- res_haci_df[
+    !is.na(res_haci_df$padj) &
+      res_haci_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  # -------------------------------------------------------
+  # Positive interaction
+  # -------------------------------------------------------
+  
+  lox10_positive <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange > 0
+  ]
+  
+  haci_positive <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange > 0
+  ]
+  
+  # -------------------------------------------------------
+  # Negative interaction
+  # -------------------------------------------------------
+  
+  lox10_negative <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange < 0
+  ]
+  
+  haci_negative <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange < 0
+  ]
+  
+  # -------------------------------------------------------
+  # Either mutant
+  # -------------------------------------------------------
+  
+  either_mutant <- union(
+    sig_lox$Gene_ID,
+    sig_haci$Gene_ID
+  )
+  
+  either_mutant_positive <- union(
+    lox10_positive,
+    haci_positive
+  )
+  
+  either_mutant_negative <- union(
+    lox10_negative,
+    haci_negative
+  )
+  
+  # -------------------------------------------------------
+  # Return
+  # -------------------------------------------------------
+  
+  list(
+    dds = dds,
+    
+    lox10_vs_WT = res_lox_df,
+    haci_vs_WT = res_haci_df,
+    
+    significant_lox10_vs_WT = sig_lox,
+    significant_haci_vs_WT = sig_haci,
+    
+    lox10_positive = lox10_positive,
+    lox10_negative = lox10_negative,
+    
+    haci_positive = haci_positive,
+    haci_negative = haci_negative,
+    
+    either_mutant = either_mutant,
+    either_mutant_positive = either_mutant_positive,
+    either_mutant_negative = either_mutant_negative
+  )
+}
+
+
+# ---------------------------------------------------------
+# Run all segments
+# ---------------------------------------------------------
+
+segments <- unique(as.character(dat_meta$segment))
+
+DE_results <- lapply(
+  segments,
+  function(seg) {
+    
+    message("Running segment: ", seg)
+    
+    run_segment_interaction(
+      segment_name = seg,
+      counts = dat_raw_counts,
+      metadata = dat_meta,
+      padj_cutoff = 0.05
+    )
+  }
+)
+
+names(DE_results) <- segments
+
+
+# ---------------------------------------------------------
+# Gene vectors for topGO
+# ---------------------------------------------------------
+
+topGO_genes <- lapply(
+  DE_results,
+  function(x) {
+    
+    list(
+      lox10_positive = x$lox10_positive,
+      lox10_negative = x$lox10_negative,
+      
+      haci_positive = x$haci_positive,
+      haci_negative = x$haci_negative,
+      
+      either_mutant = x$either_mutant,
+      either_mutant_positive = x$either_mutant_positive,
+      either_mutant_negative = x$either_mutant_negative
+    )
+  }
+)
+
+
+# ---------------------------------------------------------
+# Individual vectors if desired
+# ---------------------------------------------------------
+
+S1_lox10_positive <- topGO_genes$S1$lox10_positive
+S1_lox10_negative <- topGO_genes$S1$lox10_negative
+S1_haci_positive <- topGO_genes$S1$haci_positive
+S1_haci_negative <- topGO_genes$S1$haci_negative
+
+S2_lox10_positive <- topGO_genes$S2$lox10_positive
+S2_lox10_negative <- topGO_genes$S2$lox10_negative
+S2_haci_positive <- topGO_genes$S2$haci_positive
+S2_haci_negative <- topGO_genes$S2$haci_negative
+
+S3_lox10_positive <- topGO_genes$S3$lox10_positive
+S3_lox10_negative <- topGO_genes$S3$lox10_negative
+S3_haci_positive <- topGO_genes$S3$haci_positive
+S3_haci_negative <- topGO_genes$S3$haci_negative
+
+
+# ---------------------------------------------------------
+# Check number of genes
+# ---------------------------------------------------------
+
+sapply(
+  topGO_genes,
+  function(x) sapply(x, length)
+)
+```
+
+
+```{r}
+# library(dplyr)
+# library(tibble)
+
+
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta), drop = FALSE]
+
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+
+
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+run_segment_interaction <- function(
+    segment_name,
+    counts,
+    metadata,
+    padj_cutoff = 0.05
+) {
+  
+  # Subset metadata
+  meta_seg <- metadata[
+    as.character(metadata$segment) == segment_name,
+    ,
+    drop = FALSE
+  ]
+  
+  # Keep only samples present in counts
+  meta_seg <- meta_seg[
+    rownames(meta_seg) %in% colnames(counts),
+    ,
+    drop = FALSE
+  ]
+  
+  # Subset counts
+  counts_seg <- counts[, rownames(meta_seg), drop = FALSE]
+  
+  # Ensure identical sample order
+  counts_seg <- counts_seg[, rownames(meta_seg), drop = FALSE]
+  
+  # Drop unused factor levels
+  meta_seg$genotype <- droplevels(meta_seg$genotype)
+  meta_seg$condition_group <- droplevels(meta_seg$condition_group)
+  
+  # -------------------------------------------------------
+  # DESeq2 object
+  # -------------------------------------------------------
+  
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group +
+      genotype:condition_group
+  )
+  
+  # -------------------------------------------------------
+  # Filter low-count genes
+  # -------------------------------------------------------
+  
+  keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
+  
+  dds <- dds[keep, ]
+  
+  # -------------------------------------------------------
+  # Run DESeq2
+  # -------------------------------------------------------
+  
+  dds <- DESeq2::DESeq(dds)
+  
+  # -------------------------------------------------------
+  # lox10 vs WT interaction
+  # -------------------------------------------------------
+  
+  res_lox <- DESeq2::results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  # -------------------------------------------------------
+  # haci vs WT interaction
+  # -------------------------------------------------------
+  
+  res_haci <- DESeq2::results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  # -------------------------------------------------------
+  # Convert to data frames
+  # -------------------------------------------------------
+  
+  res_lox_df <- as.data.frame(res_lox)
+  res_lox_df$Gene_ID <- rownames(res_lox_df)
+  rownames(res_lox_df) <- NULL
+  
+  res_lox_df$segment <- segment_name
+  res_lox_df$comparison <- "lox10_vs_WT"
+  
+  res_haci_df <- as.data.frame(res_haci)
+  res_haci_df$Gene_ID <- rownames(res_haci_df)
+  rownames(res_haci_df) <- NULL
+  
+  res_haci_df$segment <- segment_name
+  res_haci_df$comparison <- "haci_vs_WT"
+  
+  # -------------------------------------------------------
+  # Significant genes
+  # -------------------------------------------------------
+  
+  sig_lox <- res_lox_df[
+    !is.na(res_lox_df$padj) &
+      res_lox_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  sig_haci <- res_haci_df[
+    !is.na(res_haci_df$padj) &
+      res_haci_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  # -------------------------------------------------------
+  # Positive interaction
+  # -------------------------------------------------------
+  
+  lox10_positive <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange > 0
+  ]
+  
+  haci_positive <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange > 0
+  ]
+  
+  # -------------------------------------------------------
+  # Negative interaction
+  # -------------------------------------------------------
+  
+  lox10_negative <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange < 0
+  ]
+  
+  haci_negative <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange < 0
+  ]
+  
+  # -------------------------------------------------------
+  # Either mutant
+  # -------------------------------------------------------
+  
+  either_mutant <- union(
+    sig_lox$Gene_ID,
+    sig_haci$Gene_ID
+  )
+  
+  either_mutant_positive <- union(
+    lox10_positive,
+    haci_positive
+  )
+  
+  either_mutant_negative <- union(
+    lox10_negative,
+    haci_negative
+  )
+  
+  # -------------------------------------------------------
+  # Return
+  # -------------------------------------------------------
+  
+  list(
+    dds = dds,
+    
+    lox10_vs_WT = res_lox_df,
+    haci_vs_WT = res_haci_df,
+    
+    significant_lox10_vs_WT = sig_lox,
+    significant_haci_vs_WT = sig_haci,
+    
+    lox10_positive = lox10_positive,
+    lox10_negative = lox10_negative,
+    
+    haci_positive = haci_positive,
+    haci_negative = haci_negative,
+    
+    either_mutant = either_mutant,
+    either_mutant_positive = either_mutant_positive,
+    either_mutant_negative = either_mutant_negative
+  )
+}
+
+
+# ---------------------------------------------------------
+# Run all segments
+# ---------------------------------------------------------
+
+segments <- unique(as.character(dat_meta$segment))
+
+DE_results <- lapply(
+  segments,
+  function(seg) {
+    
+    message("Running segment: ", seg)
+    
+    run_segment_interaction(
+      segment_name = seg,
+      counts = dat_raw_counts,
+      metadata = dat_meta,
+      padj_cutoff = 0.05
+    )
+  }
+)
+
+names(DE_results) <- segments
+
+
+# ---------------------------------------------------------
+# Gene vectors for topGO
+# ---------------------------------------------------------
+
+topGO_genes <- lapply(
+  DE_results,
+  function(x) {
+    
+    list(
+      lox10_positive = x$lox10_positive,
+      lox10_negative = x$lox10_negative,
+      
+      haci_positive = x$haci_positive,
+      haci_negative = x$haci_negative,
+      
+      either_mutant = x$either_mutant,
+      either_mutant_positive = x$either_mutant_positive,
+      either_mutant_negative = x$either_mutant_negative
+    )
+  }
+)
+
+
+# ---------------------------------------------------------
+# Individual vectors
+# ---------------------------------------------------------
+
+S1_lox10_positive <- topGO_genes$S1$lox10_positive
+S1_lox10_negative <- topGO_genes$S1$lox10_negative
+S1_haci_positive <- topGO_genes$S1$haci_positive
+S1_haci_negative <- topGO_genes$S1$haci_negative
+
+S2_lox10_positive <- topGO_genes$S2$lox10_positive
+S2_lox10_negative <- topGO_genes$S2$lox10_negative
+S2_haci_positive <- topGO_genes$S2$haci_positive
+S2_haci_negative <- topGO_genes$S2$haci_negative
+
+S3_lox10_positive <- topGO_genes$S3$lox10_positive
+S3_lox10_negative <- topGO_genes$S3$lox10_negative
+S3_haci_positive <- topGO_genes$S3$haci_positive
+S3_haci_negative <- topGO_genes$S3$haci_negative
+
+
+# ---------------------------------------------------------
+# Check number of genes
+# ---------------------------------------------------------
+
+sapply(
+  topGO_genes,
+  function(x) sapply(x, length)
+)
+```
+
+
+# 5. Functional interpretation
+
+## 5.1. GO-Term analysis
+
+```{r}
+# format go-term df:
+dat_b73_go1 <- dat_b73_go[(dat_b73_go$ARGOT_PPV > 0.5), ]
+dat_b73_go1$goid <- paste0('GO:', dat_b73_go1$goid)
+
+dat_b73_go2 <- dat_b73_go1 |>
+  separate(qpid, into = c("qpid", "P_isoform"), sep = "_")
+
+panzer_to_golist <- function(panzer_df){
+  go_df <- aggregate( goid ~ qpid, data=panzer_df, FUN=c)
+  structure(go_df$goid, .Names=go_df$qpid)
+}
+all_golist <- panzer_to_golist(dat_b73_go2)
+```
+
+TopGO needs the full list of genes with a column "myInput" that contains "yes" or "no", yes denotes the genes I would like to run the enrichment analysis on.
+
+1. make a df that is just a list of the genes that are differentially expressed:
+```{r}
+S1 <- topGO_genes$S1$either_mutant
+S2 <- topGO_genes$S2$either_mutant
+S3 <- topGO_genes$S3$either_mutant
+
+dat_s1 <- as.data.frame(S1)
+dat_s2 <- as.data.frame(S2)
+dat_s3 <- as.data.frame(S3)
+
+colnames(dat_s1) <- "genenames"
+colnames(dat_s2) <- "genenames"
+colnames(dat_s3) <- "genenames"
+
+dat_s1 <- dat_s1 |>
+  mutate(myInput = "yes")
+
+```
+
+
+```{r}
+# create full list of genes
+gene_names <- names(all_golist)
+myGenes <- as.data.frame(gene_names)
+colnames(myGenes) <- "genenames"
+myGenes <- left_join(myGenes, dat_s1)
+myGenes$myInput <- myGenes$myInput %>%
+  replace_na('no')
+myGenesF <- factor(as.integer(myGenes$myInput == 'yes'))
+names(myGenesF) <- gene_names
+```
+
+Run enrichment analysis:
+```{r}
+run_topGO <- function(gene_list, ontology, gene2GO_list){
+  topGO_data <- new("topGOdata", ontology = ontology, allGenes = gene_list,
+                    annot = annFUN.gene2GO, gene2GO = gene2GO_list)
+  fishers_result <- runTest(topGO_data, algorithm = "elim", statistic = "fisher")
+  fishers_table <- GenTable(topGO_data, Fishers = fishers_result, useLevels = TRUE)
+  fishers_table$Ontology <- ontology
+  fishers_table
+}
+```
+
+```{r}
+myGenes_BP.table <- run_topGO(myGenesF, "BP", all_golist)
+myGenes_MF.table <- run_topGO(myGenesF, "MF", all_golist)
+myGenes_CC.table <- run_topGO(myGenesF, "CC", all_golist)
+```
+
+
+## 5.2. KEGG
 
 
