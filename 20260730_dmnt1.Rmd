@@ -10,6 +10,9 @@ output: html_document
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
+library(ggpubr)
+library(ARTool)
+library(rcompanion)
 ```
 
 # Define Functions
@@ -57,30 +60,71 @@ fun_process_data <- function(dat) {  # this function wrangles data coming from t
 # 20260622
 ## Load data
 ```{r}
-dat_1 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260810_results.csv",
+dat_1 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260810_results.csv",
                   header = T, sep = ",")
 
-dat_2 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260811_results.csv",
+dat_2 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260811_results.csv",
                   header = T, sep = ",")
 
-dat_3 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260812_results.csv",
+dat_3 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260812_results.csv",
                   header = T, sep = ",")
 
-dat_4 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260813_results.csv",
+dat_4 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260813_results.csv",
                   header = T, sep = ",")
 
-dat_5 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260814_results.csv",
+dat_5 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260814_results.csv",
                   header = T, sep = ",")
 
-dat_6 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_results.csv",
+dat_6 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260817_results.csv",
                   header = T, sep = ",")
+
+# lox10 data:
+
+dat_7 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260831_results_lox10.csv",
+                  header = T, sep = ",") 
+
+dat_8 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260902_lox_results.csv",
+                  header = T, sep = ",") 
+
+dat_9 <- read.csv("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/01_SPME_GC_MS/01_data/01_data_onlinesoftware/20260905_lox_results.csv",
+                  header = T, sep = ",") 
 
 ```
 
 # wrangle data
 
 ```{r}
-for (i in 1:6) {
+# remove "_LOX" from the sample name
+
+dat_81 <- dat_8 |>
+  separate(col = "Sample",
+           into = c("1", "2", "3", "4"),
+           sep = "_")
+
+dat_82 <- dat_81 |>
+  unite(col = "Sample",
+        c("1", "3", "4"),
+        sep = "_")
+
+dat_91 <- dat_9 |>
+  separate(col = "Sample",
+           into = c("1", "2", "3", "4"),
+           sep = "_")
+
+dat_92 <- dat_91 |>
+  unite(col = "Sample",
+        c("1", "3", "4"),
+        sep = "_")
+
+dat_8 <- dat_82 |>
+  select(-"2")
+dat_9 <- dat_92 |>
+  select(-"2")
+```
+
+
+```{r}
+for (i in 1:9) {
   
   input <- get(paste0("dat_", i))
   
@@ -94,7 +138,14 @@ for (i in 1:6) {
 ```{r}
 # combine dfs
 
-dat_all <- rbind(dat_11, dat_12, dat_13, dat_14, dat_15, dat_16)
+dat_all <- rbind(dat_11, dat_12, dat_13, dat_14, dat_15, dat_16, dat_17, dat_18, dat_19)
+```
+
+```{r}
+# add genotype
+
+dat_all <- dat_all |>
+  mutate(genotype = ifelse(date %in% c("20260831", "20260902", "20260905"), "lox10", "wt"))
 ```
 
 
@@ -102,36 +153,47 @@ dat_all <- rbind(dat_11, dat_12, dat_13, dat_14, dat_15, dat_16)
 ```{r}
 # plot combined dat:
 
-pal1 <- c("#8ecae6", "#219ebc", "#126782", "#023047",
-          "#ffb703","#fd9e02", "#fb8500")
+pal1 <- c("#ffb703","#8ecae6", "#fd9e02","#219ebc",
+          "#fb8500", "#126782")
 
 dat_all <- dat_all |>
   mutate(date = as.factor(date),
          segment = as.factor(segment),
          iteration = as.factor(iteration),
-         Compound = as.factor(Compound))
+         Compound = as.factor(Compound),
+         genotype = as.factor(genotype))
 
 dat_plot <- dat_all |>
-  group_by(segment, iteration, Compound) |>
+  group_by(segment, iteration, Compound, genotype) |>
   mutate(mean_a = mean(quant),
-         se_a = se(quant))
+         se_a = se(quant)) |>
+  ungroup()
 
 neworder <- c("HAL","HOL","HAC", "DMNT", "Linalool")
-dat_plot1 <- arrange(mutate(dat_plot_from_fun,
+dat_plot1 <- arrange(mutate(dat_plot,
              compound = factor(Compound,levels=neworder)),Compound)
 
-plot5 <- ggplot(dat_plot1, aes(x = time_min, y = mean_a, color = segment)) +
+dat_plot2 <- dat_plot1 |>
+  unite(col = "seg_gen",
+        c(segment, genotype),
+        remove = F)
+
+dat_plot2 <- subset(dat_plot2, !is.na(iteration))
+
+
+plot5 <- ggplot(dat_plot2, aes(x = time_min, y = mean_a, fill = seg_gen, color = seg_gen)) +
   facet_wrap(~ compound, scales = "free_y") +
-  geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_ribbon(aes(ymin = mean_a - se_a, 
+		    ymax = mean_a + se_a),
+		    alpha = 0.3,
+		    colour = NA) +
   geom_line(linewidth = 0.7) + 
   geom_point() +
   scale_color_manual(values = pal1) +
   # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
   #                    breaks=seq(0,60,15)) +
-  scale_fill_manual(labels = c("proximal",
-                               "local",
-                               "distal"),
-                    breaks = c("S1", "S2", "S3")) +
+  scale_fill_manual(values = pal1) +
    theme(text = element_text(size=12),
         legend.position = "bottom",
         panel.grid.major = element_blank(),
@@ -152,10 +214,360 @@ plot5 <- ggplot(dat_plot1, aes(x = time_min, y = mean_a, color = segment)) +
 plot5
 ```
 
+```{r}
+# Maximum y-axis values for S1, S2, S3
+y_limits <- list(
+  HAL     = c(250, 500, 250),
+  HOL     = c(40, 80, 40),
+  HAC     = c(2.5, 5, 2.5),
+  DMNT    = c(1000, 1000, 2000),
+  Linalool = c(350, 350, 700)
+)
+
+# Make sure segments are in the desired order
+dat_plot2 <- dat_plot2 |>
+  mutate(
+    segment = factor(segment, levels = c("S1", "S2", "S3"))
+  )
+
+plots <- list()
+
+for (comp in unique(dat_plot2$compound)) {
+  
+  dat <- dat_plot2 |>
+    filter(compound == comp)
+  
+  # Get y-axis limits for this compound
+  ylim <- y_limits[[comp]]
+  
+  plots[[comp]] <- ggplot(
+    dat,
+    aes(
+      x = time_min,
+      y = mean_a,
+      fill = genotype,
+      color = genotype
+    )
+  ) +
+    facet_wrap(
+      ~ segment,
+      scales = "free_y"
+    ) +
+    ggh4x::facetted_pos_scales(
+      y = list(
+        segment == "S1" ~ scale_y_continuous(limits = c(0, ylim[1])),
+        segment == "S2" ~ scale_y_continuous(limits = c(0, ylim[2])),
+        segment == "S3" ~ scale_y_continuous(limits = c(0, ylim[3]))
+      )
+    ) +
+    geom_ribbon(
+      aes(
+        ymin = mean_a - se_a,
+        ymax = mean_a + se_a
+      ),
+      alpha = 0.3,
+      colour = NA
+    ) +
+    geom_line(linewidth = 0.7) +
+    geom_point() +
+    scale_color_manual(values = pal1) +
+    scale_fill_manual(values = pal1) +
+    theme(
+      text = element_text(size = 12),
+      legend.position = "bottom",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(
+        fill = "white",
+        color = "white"
+      ),
+      axis.line = element_line(colour = "black"),
+      axis.text = element_text(size = 12),
+      axis.title.x = element_text(size = 12),
+      axis.text.x = element_text(),
+      axis.text.y = element_text(color = "black"),
+      title = element_text(size = 12),
+      strip.placement = "outside",
+      strip.background = element_blank(),
+      strip.text = element_text(size = 12)
+    ) +
+    labs(
+      x = "time (min)",
+      y = "area",
+      title = comp
+    )
+}
+
+# Display
+p_hal <- plots$HAL
+p_hol <- plots$HOL
+p_hac <- plots$HAC
+p_dmnt <- plots$DMNT
+p_lina <- plots$Linalool
+
+p_hal
+p_hol
+p_hac
+p_dmnt
+p_lina
+```
+
+```{r}
+ggsave("01_SPME_GC_MS/02_figs/p_hal.svg", p_hal, 
+       height = 8, width = 16, unit = "cm")
+
+ggsave("01_SPME_GC_MS/02_figs/p_hol.svg", p_hol, 
+       height = 8, width = 16, unit = "cm")
+
+ggsave("01_SPME_GC_MS/02_figs/p_hac.svg", p_hac, 
+       height = 8, width = 16, unit = "cm")
+
+ggsave("01_SPME_GC_MS/02_figs/p_dmnt.svg", p_dmnt, 
+       height = 8, width = 18, unit = "cm")
+
+ggsave("01_SPME_GC_MS/02_figs/p_lina.svg", p_lina, 
+       height = 8, width = 18, unit = "cm")
+
+
+```
+
+
+
+```{r}
+# barplots total sum:
+
+dat_plot3 <- dat_plot2 |>
+  group_by(date, segment, genotype, compound) |>
+  summarize(
+    sum_volatile = case_when(
+      first(compound) %in% c("DMNT", "Linalool") ~ sum(area, na.rm = TRUE),
+      TRUE ~ sum(quant, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
 
 
 
 
+# Calculate mean and SE
+dat_summary <- dat_plot3 |>
+  group_by(compound, segment, genotype) |>
+  mutate(
+    mean_volatile = mean(sum_volatile, na.rm = TRUE),
+    se_volatile = se(sum_volatile))
+
+# One plot per compound
+plots <- list()
+
+for (comp in unique(dat_summary$compound)) {
+  
+  dat <- dat_summary |>
+    filter(compound == comp)
+  
+  plots[[comp]] <- ggplot(
+    dat,
+    aes(
+      x = segment,
+      y = mean_volatile,
+      fill = genotype
+    )
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7
+    ) +
+    geom_errorbar(
+      aes(
+        ymin = mean_volatile - se_volatile,
+        ymax = mean_volatile + se_volatile
+      ),
+      position = position_dodge(width = 0.8),
+      width = 0.2
+    ) +
+    labs(
+      title = comp,
+      x = "Segment",
+      y = "Sum volatile",
+      fill = "Genotype"
+    ) +
+    theme_classic() +
+    theme(
+      legend.position = "bottom"
+    )
+}
+
+sum_hal <- plots$HAL
+sum_hol <- plots$HOL
+sum_hac <- plots$HAC
+sum_dmnt <- plots$DMNT
+sum_lina <- plots$Linalool
+
+sum_hal
+sum_hol
+sum_hac
+sum_dmnt
+sum_lina
+```
+
+```{r}
+# just lox10
+
+dat_lox10 <- subset(dat_plot2, genotype == "lox10")
+
+dat_lox10p <- dat_lox10 |>
+  group_by(compound, segment, time_min) |>
+  mutate(mean_a = mean(Area, na.rm = T),
+         se_a = se(Area))
+
+plot5 <- ggplot(dat_lox10p, aes(x = time_min, y = mean_a, fill = segment, color = segment)) +
+  facet_wrap(~ compound, scales = "free_y") +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+  geom_ribbon(aes(ymin = mean_a - se_a, 
+		    ymax = mean_a + se_a),
+		    alpha = 0.3,
+		    colour = NA) +
+  geom_line(linewidth = 0.7) + 
+  geom_point() +
+  scale_color_manual(values = pal1) +
+  # scale_x_continuous(limits=c(-5,65), expand = c(0,0), 
+  #                    breaks=seq(0,60,15)) +
+  scale_fill_manual(values = pal1) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot5
+```
+
+-> there are some GLVs in S2 of lox10 plants. (Mainly HOL and HAC, I think HAL is a mistake that it's there.)
+
+# Stats
+
+```{r}
+
+model <- lm(sqrt(sum_volatile) ~ compound * segment * genotype, data = dat_plot3)
+
+ggqqplot(rstandard(model))
+
+summary(rstandard(model))
+sd(rstandard(model), na.rm = TRUE)
+
+hist(dat_all$quant)
+ggqqplot(dat_all, "quant",
+         color = c("Compound", "segment", "genotype"),
+         merge = T)
+
+
+anova(model)
+summary(model)
+
+qqnorm(rstandard(model))
+qqline(rstandard(model))
+
+hist(rstandard(model), breaks = 30)
+
+ggplot(
+  data.frame(
+    fitted = fitted(model),
+    residual = rstandard(model)
+  ),
+  aes(x = fitted, y = residual)
+) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  theme_classic()
+
+ggplot(
+  dat_plot3,
+  aes(x = fitted(model), y = rstandard(model))
+) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~ compound, scales = "free") +
+  geom_hline(yintercept = 0, linetype = 2) +
+  theme_classic()
+```
+
+```{r}
+SRH_results <- lapply(unique(dat_plot3$compound), function(cmp) {
+  
+  dat_tmp <- dat_plot3 |>
+    filter(compound == cmp) |>
+    mutate(
+      segment = as.factor(segment),
+      genotype = as.factor(genotype)
+    ) |>
+    droplevels()
+  
+  scheirerRayHare(
+    sum_volatile ~ segment * genotype,
+    data = dat_tmp
+  ) |>
+    as.data.frame() |>
+    tibble::rownames_to_column("Effect") |>
+    mutate(compound = cmp, .before = 1)
+  
+}) |>
+  bind_rows()
+
+SRH_results
+```
+
+```{r}
+# art
+library(dplyr)
+library(ARTool)
+library(tibble)
+
+ART_results <- lapply(unique(dat_plot3$compound), function(cmp) {
+  
+  dat_tmp <- dat_plot3 |>
+    filter(compound == cmp) |>
+    mutate(
+      segment = as.factor(segment),
+      genotype = as.factor(genotype)
+    ) |>
+    droplevels()
+  
+  art_model <- art(
+    sum_volatile ~ segment * genotype,
+    data = dat_tmp
+  )
+  
+  anova(art_model) |>
+    as.data.frame() |>
+    rownames_to_column("Effect") |>
+    mutate(compound = cmp, .before = 1)
+  
+}) |>
+  bind_rows()
+
+ART_results
+```
+
+
+
+
+
+
+
+
+
+
+
+                    
 
 
 

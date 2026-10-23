@@ -31,6 +31,7 @@ library(RColorBrewer) # to change colors in pheatmap
 library(tidyverse)
 library(tibble)
 library(scales)
+library(ggrepel)
 
 ## to install DESeq2:
 # if (!require("BiocManager", quietly = TRUE))
@@ -58,22 +59,22 @@ se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
 ## 3.1. Load data
 
 ```{r}
-dat_raw_counts <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_counts.tsv",
+dat_raw_counts <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_counts.tsv",
                              header = T, row.names = 1, sep = "\t")
 
-dat_fpkm <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_fpkm_all_samples.tsv",
+dat_fpkm <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_fpkm_all_samples.tsv",
                              header = T, row.names = 1, sep = "\t")
 
-dat_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/tristan_heatmap_gene_categories.csv",
+dat_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/tristan_heatmap_gene_categories.csv",
                       header = T, sep = ",")  # first list of genes involved in defense from Tristan
 
-dat_phytohormone_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/phytohormone_candidates_gene_list.csv",
+dat_phytohormone_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/phytohormone_candidates_gene_list.csv",
                                    header = T, sep = ",")  # second list of genes involved in defense from Tristan
 
-dat_meta <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_info.csv",
+dat_meta <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_info.csv",
                              header = T, sep = ",")  # metadata
 
-dat_b73_go <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/01_Thesis/03_local_response_RNAseq/B73_GO.out",
+dat_b73_go <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/B73_GO.out",
                          quote = '"',
                              header = T, sep = "\t",
                          colClasses = c('goid' = 'character', 'qpid' = 'character'))
@@ -94,6 +95,1118 @@ dat_ph_goi <- dat_phytohormone_goi |>
 ```
 
 # 4. Differential Expression Analyses:
+## 4.1. PCA
+
+```{r}
+pal <- c("#1F66A9", "#E08201", "#8dc5e4ff")
+
+
+```
+
+
+```{r}
+rownames(dat_meta) <- dat_meta$sample_description
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta), drop = FALSE]
+
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+```
+
+```{r}
+
+for (seg in names(DE_results)) {
+
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg,
+    ,
+    drop = FALSE
+  ]
+
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+
+  dds_pca <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group + genotype:condition_group
+  )
+
+  keep <- rowSums(DESeq2::counts(dds_pca) >= 10) >= 2
+
+  dds_pca <- dds_pca[keep, ]
+
+  vsd <- DESeq2::vst(
+    dds_pca,
+    blind = TRUE
+  )
+
+  pca <- prcomp(
+    t(SummarizedExperiment::assay(vsd))
+  )
+
+  pca_data <- data.frame(
+    Sample = rownames(pca$x),
+    PC1 = pca$x[, 1],
+    PC2 = pca$x[, 2],
+    genotype = meta_seg[rownames(pca$x), "genotype"],
+    condition_group = meta_seg[rownames(pca$x), "condition_group"]
+  )
+
+  percent_var <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+
+  p <- ggplot(
+    pca_data,
+    aes(
+      x = PC1,
+      y = PC2,
+      fill = genotype,
+      shape = condition_group
+    )
+  ) +
+    geom_point(size = 4, color = "black",
+               stroke = 1) +
+    scale_fill_manual(values = pal) +
+    scale_shape_manual(
+    values = c(
+      "w" = 21,
+      "c" = 23
+    )
+  ) +
+    xlab(
+      paste0(
+        "PC1 (",
+        round(percent_var[1], 1),
+        "%)"
+      )
+    ) +
+    ylab(
+      paste0(
+        "PC2 (",
+        round(percent_var[2], 1),
+        "%)"
+      )
+    ) +
+    ggtitle(
+      paste0(seg, " - PCA")
+    ) +
+    theme(text=element_text(size=12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"), 
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=12),
+        axis.text.x=element_text(color='black'),
+        axis.text.y=element_text(color='black')) +
+    theme_classic()
+  
+  print(p)
+  
+  ggsave(
+    filename = paste0("03_local_response_RNAseq/02_plots/PCA_", seg, ".svg"),
+    plot = p,
+    width = 12,
+    height = 8,
+    units = "cm")
+}
+```
+
+```{r}
+ggsave("03_local_response_RNAseq/02_plots/pca.svg",
+       p,
+       )
+```
+
+
+```{r}
+# =========================================================
+# PCA plots
+# =========================================================
+
+for (seg in levels(dat_meta$segment)) {
+  
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg,
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+  
+  dds_pca <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group
+  )
+  
+  keep <- rowSums(DESeq2::counts(dds_pca) >= 10) >= 2
+  dds_pca <- dds_pca[keep, ]
+  
+  dds_pca <- DESeq2::DESeq(dds_pca)
+  
+  vsd <- DESeq2::vst(
+    dds_pca,
+    blind = FALSE
+  )
+  
+  pca_data <- DESeq2::plotPCA(
+    vsd,
+    intgroup = c("genotype", "condition_group"),
+    returnData = TRUE
+  )
+  
+  percent_var <- round(
+    100 * attr(pca_data, "percentVar")
+  )
+  
+  p <- ggplot(
+    pca_data,
+    aes(
+      x = PC1,
+      y = PC2,
+      color = genotype,
+      shape = condition_group,
+      label = name
+    )
+  ) +
+    geom_point(size = 4) +
+    geom_text_repel(
+      size = 3,
+      max.overlaps = 20
+    ) +
+    xlab(paste0("PC1 (", percent_var[1], "%)")) +
+    ylab(paste0("PC2 (", percent_var[2], "%)")) +
+    ggtitle(paste0("PCA - ", seg)) +
+    theme_classic()
+  
+  print(p)
+}
+
+p
+```
+
+```{r}
+
+for (seg in c("S1", "S2", "S3")) {
+
+  meta_seg <- dat_meta[as.character(dat_meta$segment) == seg, , drop = FALSE]
+
+  meta_seg <- meta_seg[
+    rownames(meta_seg) %in% colnames(dat_raw_counts),
+    ,
+    drop = FALSE
+  ]
+
+  counts_seg <- dat_raw_counts[, rownames(meta_seg), drop = FALSE]
+
+  meta_seg <- meta_seg[colnames(counts_seg), , drop = FALSE]
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group
+  )
+
+  dds <- dds[rowSums(DESeq2::counts(dds) >= 10) >= 2, ]
+
+  dds <- DESeq2::DESeq(dds)
+
+  vsd <- DESeq2::vst(dds, blind = TRUE)
+
+  pca <- prcomp(t(assay(vsd)))
+
+  pca_df <- data.frame(
+    Sample = rownames(pca$x),
+    PC1 = pca$x[, 1],
+    PC2 = pca$x[, 2]
+  )
+
+  pca_df$genotype <- meta_seg[pca_df$Sample, "genotype"]
+  pca_df$condition_group <- meta_seg[pca_df$Sample, "condition_group"]
+
+  var_explained <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+
+  ggplot(
+    pca_df,
+    aes(
+      x = PC1,
+      y = PC2,
+      color = genotype,
+      shape = condition_group
+    )
+  ) +
+    geom_point(size = 4) +
+    geom_text(
+      aes(label = Sample),
+      vjust = -1,
+      size = 3
+    ) +
+    xlab(paste0("PC1 (", round(var_explained[1], 1), "%)")) +
+    ylab(paste0("PC2 (", round(var_explained[2], 1), "%)")) +
+    ggtitle(paste("PCA -", seg)) +
+    theme_classic()
+}
+
+```
+
+```{r}
+library(ggplot2)
+
+for (seg in unique(as.character(dat_meta$segment))) {
+
+  meta_seg <- dat_meta[as.character(dat_meta$segment) == seg, , drop = FALSE]
+
+  counts_seg <- dat_raw_counts[, rownames(meta_seg), drop = FALSE]
+
+  meta_seg <- meta_seg[colnames(counts_seg), , drop = FALSE]
+
+  meta_seg$genotype <- droplevels(meta_seg$genotype)
+  meta_seg$condition_group <- droplevels(meta_seg$condition_group)
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group + genotype:condition_group
+  )
+
+  keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+
+  vsd <- DESeq2::vst(dds, blind = TRUE)
+
+  pca <- prcomp(t(SummarizedExperiment::assay(vsd)))
+
+  pca_df <- data.frame(
+    Sample = rownames(pca$x),
+    PC1 = pca$x[, 1],
+    PC2 = pca$x[, 2],
+    genotype = meta_seg[rownames(pca$x), "genotype"],
+    condition_group = meta_seg[rownames(pca$x), "condition_group"]
+  )
+
+  var_explained <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+
+  ggplot(
+    pca_df,
+    aes(
+      x = PC1,
+      y = PC2,
+      color = genotype,
+      shape = condition_group
+    )
+  ) +
+    geom_point(size = 4) +
+    geom_text(
+      aes(label = Sample),
+      vjust = -1,
+      size = 3
+    ) +
+    xlab(paste0("PC1 (", round(var_explained[1], 1), "%)")) +
+    ylab(paste0("PC2 (", round(var_explained[2], 1), "%)")) +
+    ggtitle(paste("PCA -", seg)) +
+    theme_classic()
+}
+```
+
+
+## 4.2. Volcano plots
+
+```{r}
+for (seg in names(DE_results)) {
+  
+  # -------------------------------------------------------
+  # Select this segment AND wounded samples only
+  # -------------------------------------------------------
+  
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg &
+    as.character(dat_meta$condition_group) == "w",
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+  
+  # -------------------------------------------------------
+  # DESeq2: genotype comparison within wounded samples
+  # -------------------------------------------------------
+  
+  dds_W <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype
+  )
+  
+  keep <- rowSums(DESeq2::counts(dds_W) >= 10) >= 2
+  dds_W <- dds_W[keep, ]
+  
+  dds_W <- DESeq2::DESeq(dds_W)
+  
+  # -------------------------------------------------------
+  # Mutant vs WT in wounded samples
+  # -------------------------------------------------------
+  
+  res_lox_W <- DESeq2::results(
+    dds_W,
+    contrast = c("genotype", "lox", "kn")
+  )
+  
+  res_haci_W <- DESeq2::results(
+    dds_W,
+    contrast = c("genotype", "haci", "kn")
+  )
+  
+  # -------------------------------------------------------
+  # Keep ONLY genes that are WT wounded DEGs
+  # -------------------------------------------------------
+  
+  WT_wounded_genes <- rownames(
+    DE_results[[seg]]$WT_wounded
+  )
+  
+  res_lox_W <- res_lox_W[
+    rownames(res_lox_W) %in% WT_wounded_genes,
+    ,
+    drop = FALSE
+  ]
+  
+  res_haci_W <- res_haci_W[
+    rownames(res_haci_W) %in% WT_wounded_genes,
+    ,
+    drop = FALSE
+  ]
+}
+```
+
+```{r}
+for (seg in names(DE_results)) {
+  
+  # Wounded samples for this segment
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg &
+    as.character(dat_meta$condition_group) == "w",
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+  
+  # DESeq2: genotype comparison within wounded samples
+  dds_W <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype
+  )
+  
+  keep <- rowSums(DESeq2::counts(dds_W) >= 10) >= 2
+  dds_W <- dds_W[keep, ]
+  dds_W <- DESeq2::DESeq(dds_W)
+  
+  # Mutant vs WT
+  res_lox_W <- DESeq2::results(
+    dds_W,
+    contrast = c("genotype", "lox", "kn")
+  )
+  
+  res_haci_W <- DESeq2::results(
+    dds_W,
+    contrast = c("genotype", "haci", "kn")
+  )
+  
+  # WT wounded DEG set
+  WT_wounded_genes <- rownames(DE_results[[seg]]$WT_wounded)
+  
+  # DEBUG
+  cat("\n====================\n")
+  cat(seg, "\n")
+  cat("====================\n")
+  
+  cat("Genes in WT wounded set:",
+      length(WT_wounded_genes), "\n")
+  
+  cat("Genes in lox result:",
+      nrow(res_lox_W), "\n")
+  
+  cat("Genes in haci result:",
+      nrow(res_haci_W), "\n")
+  
+  cat("Overlap with lox:",
+      sum(rownames(res_lox_W) %in% WT_wounded_genes), "\n")
+  
+  cat("Overlap with haci:",
+      sum(rownames(res_haci_W) %in% WT_wounded_genes), "\n")
+}
+```
+
+
+```{r}
+for (seg in names(DE_results)) {
+  
+  # =======================================================
+  # WOUNDED SAMPLES ONLY
+  # =======================================================
+  
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg &
+      as.character(dat_meta$condition_group) == "w",
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+  
+  dds_W <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype
+  )
+  
+  keep <- rowSums(DESeq2::counts(dds_W) >= 10) >= 2
+  dds_W <- dds_W[keep, ]
+  
+  dds_W <- DESeq2::DESeq(dds_W)
+  
+  
+  # =======================================================
+  # WT WOUNDED DEGs
+  # =======================================================
+  
+  # This defines the WT wounded DEG set:
+  # WT wounded vs WT control
+  #
+  # NOTE:
+  # This requires the WT wounded DEG list to already exist.
+  # If your WT wounded DEG object has a different name,
+  # replace WT_wounded_genes below.
+  
+  WT_wounded_genes <- DE_results[[seg]]$WT_wounded_genes
+  
+  
+  # =======================================================
+  # MUTANT vs WT IN WOUNDED SAMPLES
+  # =======================================================
+  
+  res_lox_W <- DESeq2::results(
+    dds_W,
+    contrast = c(
+      "genotype",
+      "lox",
+      "kn"
+    )
+  )
+  
+  res_haci_W <- DESeq2::results(
+    dds_W,
+    contrast = c(
+      "genotype",
+      "haci",
+      "kn"
+    )
+  )
+  
+  
+  # Keep ONLY genes that are WT wounded DEGs
+  
+  res_lox_W <- res_lox_W[
+    rownames(res_lox_W) %in% WT_wounded_genes,
+    ,
+    drop = FALSE
+  ]
+  
+  res_haci_W <- res_haci_W[
+    rownames(res_haci_W) %in% WT_wounded_genes,
+    ,
+    drop = FALSE
+  ]
+  
+  
+  # =======================================================
+  # LOX10 VOLCANO
+  # =======================================================
+  
+  volcano_data <- as.data.frame(res_lox_W) %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) &
+          padj < 0.05 &
+          log2FoldChange > 0 ~ "Up",
+        
+        !is.na(padj) &
+          padj < 0.05 &
+          log2FoldChange < 0 ~ "Down",
+        
+        TRUE ~ "NS"
+      )
+    )
+  
+  n_up <- sum(
+    volcano_data$significance == "Up",
+    na.rm = TRUE
+  )
+  
+  n_down <- sum(
+    volcano_data$significance == "Down",
+    na.rm = TRUE
+  )
+  
+  p_lox <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    annotate(
+      "text",
+      x = Inf,
+      y = Inf,
+      label = paste0(
+        "Up: ", n_up,
+        "\nDown: ", n_down
+      ),
+      hjust = 1.1,
+      vjust = 1.2,
+      size = 4
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(
+        seg,
+        " - lox10 W vs WT W\nWT wounded DEG subset"
+      ),
+      x = "log2 fold change",
+      y = "-log10 adjusted p-value",
+      color = NULL
+    )
+  
+  print(p_lox)
+  
+  
+  # =======================================================
+  # HACI VOLCANO
+  # =======================================================
+  
+  volcano_data <- as.data.frame(res_haci_W) %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) &
+          padj < 0.05 &
+          log2FoldChange > 0 ~ "Up",
+        
+        !is.na(padj) &
+          padj < 0.05 &
+          log2FoldChange < 0 ~ "Down",
+        
+        TRUE ~ "NS"
+      )
+    )
+  
+  n_up <- sum(
+    volcano_data$significance == "Up",
+    na.rm = TRUE
+  )
+  
+  n_down <- sum(
+    volcano_data$significance == "Down",
+    na.rm = TRUE
+  )
+  
+  p_haci <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    annotate(
+      "text",
+      x = Inf,
+      y = Inf,
+      label = paste0(
+        "Up: ", n_up,
+        "\nDown: ", n_down
+      ),
+      hjust = 1.1,
+      vjust = 1.2,
+      size = 4
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(
+        seg,
+        " - haci W vs WT W\nWT wounded DEG subset"
+      ),
+      x = "log2 fold change",
+      y = "-log10 adjusted p-value",
+      color = NULL
+    )
+  
+  print(p_haci)
+}
+```
+
+```{r}
+for (seg in names(DE_results)) {
+  
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg,
+    ,
+    drop = FALSE
+  ]
+  
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+  
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group + genotype:condition_group
+  )
+  
+  keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+  
+  dds <- DESeq2::DESeq(dds)
+  
+  # -------------------------------------------------------
+  # WT wounded vs WT control
+  # -------------------------------------------------------
+  
+  res_WT_wounding <- DESeq2::results(
+    dds,
+    contrast = c(
+      "condition_group",
+      "w",
+      "c"
+    )
+  )
+  
+  # WT wounded DEG subset
+  WT_wounded_genes <- rownames(res_WT_wounding)[
+    !is.na(res_WT_wounding$padj) &
+    res_WT_wounding$padj < 0.05
+  ]
+  
+  
+  # -------------------------------------------------------
+  # lox10 wounded vs WT wounded
+  # -------------------------------------------------------
+  
+  res_lox_W <- DESeq2::results(
+    dds,
+    contrast = list(
+      c(
+        "genotypelox",
+        "genotypelox.condition_groupc"
+      )
+    )
+  )
+  
+  res_lox_W <- res_lox_W[
+    rownames(res_lox_W) %in% WT_wounded_genes,
+    ]
+  
+  
+  # -------------------------------------------------------
+  # haci wounded vs WT wounded
+  # -------------------------------------------------------
+  
+  res_haci_W <- DESeq2::results(
+    dds,
+    contrast = list(
+      c(
+        "genotypehaci",
+        "genotypehaci.condition_groupc"
+      )
+    )
+  )
+  
+  res_haci_W <- res_haci_W[
+    rownames(res_haci_W) %in% WT_wounded_genes,
+    ]
+  
+  
+  # -------------------------------------------------------
+  # Counts
+  # -------------------------------------------------------
+  
+  n_lox <- sum(
+    !is.na(res_lox_W$padj) &
+    res_lox_W$padj < 0.05
+  )
+  
+  n_haci <- sum(
+    !is.na(res_haci_W$padj) &
+    res_haci_W$padj < 0.05
+  )
+  
+  print(
+    paste0(
+      seg,
+      " - WT wounded DEG subset: ",
+      length(WT_wounded_genes),
+      " genes"
+    )
+  )
+  
+  print(
+    paste0(
+      seg,
+      " - lox10 W vs WT W: ",
+      n_lox,
+      " significant genes"
+    )
+  )
+  
+  print(
+    paste0(
+      seg,
+      " - haci W vs WT W: ",
+      n_haci,
+      " significant genes"
+    )
+  )
+}
+```
+
+
+
+```{r}
+
+# =========================================================
+# Volcano plots
+#
+# Interaction:
+#   log2FoldChange > 0 = stronger/more positive C vs W
+#                         response in mutant than WT
+#
+#   log2FoldChange < 0 = weaker/more negative C vs W
+#                         response in mutant than WT
+# =========================================================
+
+for (seg in names(DE_results)) {
+  
+  # -------------------------------------------------------
+  # lox10 vs WT
+  # -------------------------------------------------------
+  
+  res <- DE_results[[seg]]$lox10_vs_WT
+  
+  volcano_data <- res %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) & padj < 0.05 & log2FoldChange > 0 ~ "Up",
+        !is.na(padj) & padj < 0.05 & log2FoldChange < 0 ~ "Down",
+        TRUE ~ "NS"
+      )
+    )
+  
+  p_lox <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(seg, " - lox10 vs WT interaction"),
+      x = "Interaction log2 fold change",
+      y = "-log10 adjusted p-value",
+      color = NULL
+    )
+  
+  print(p_lox)
+  
+  
+  # -------------------------------------------------------
+  # haci vs WT
+  # -------------------------------------------------------
+  
+  res <- DE_results[[seg]]$haci_vs_WT
+  
+  volcano_data <- res %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) & padj < 0.05 & log2FoldChange > 0 ~ "Up",
+        !is.na(padj) & padj < 0.05 & log2FoldChange < 0 ~ "Down",
+        TRUE ~ "NS"
+      )
+    )
+  
+  p_haci <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(seg, " - haci vs WT interaction"),
+      x = "Interaction log2 fold change",
+      y = "-log10 adjusted p-value",
+      color = NULL
+    )
+  
+  print(p_haci)
+}
+
+
+# =========================================================
+# Optional: label significant genes on volcano plots
+# =========================================================
+
+for (seg in names(DE_results)) {
+  
+  # -----------------------------
+  # lox10
+  # -----------------------------
+  
+  res <- DE_results[[seg]]$lox10_vs_WT
+  
+  volcano_data <- res %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) & padj < 0.05 & log2FoldChange > 0 ~ "Up",
+        !is.na(padj) & padj < 0.05 & log2FoldChange < 0 ~ "Down",
+        TRUE ~ "NS"
+      )
+    )
+  
+  labels <- volcano_data %>%
+    filter(significance != "NS") %>%
+    arrange(padj) %>%
+    slice_head(n = 10)
+  
+  p <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_text_repel(
+      data = labels,
+      aes(label = Gene_ID),
+      size = 3,
+      max.overlaps = 10
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(seg, " - lox10 vs WT interaction"),
+      x = "Interaction log2 fold change",
+      y = "-log10 adjusted p-value"
+    )
+  
+  print(p)
+  
+  
+  # -----------------------------
+  # haci
+  # -----------------------------
+  
+  res <- DE_results[[seg]]$haci_vs_WT
+  
+  volcano_data <- res %>%
+    mutate(
+      neg_log10_padj = -log10(padj),
+      significance = case_when(
+        !is.na(padj) & padj < 0.05 & log2FoldChange > 0 ~ "Up",
+        !is.na(padj) & padj < 0.05 & log2FoldChange < 0 ~ "Down",
+        TRUE ~ "NS"
+      )
+    )
+  
+  labels <- volcano_data %>%
+    filter(significance != "NS") %>%
+    arrange(padj) %>%
+    slice_head(n = 10)
+  
+  p <- ggplot(
+    volcano_data,
+    aes(
+      x = log2FoldChange,
+      y = neg_log10_padj
+    )
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.6,
+      size = 1.5
+    ) +
+    geom_text_repel(
+      data = labels,
+      aes(label = Gene_ID),
+      size = 3,
+      max.overlaps = 10
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed"
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Up" = "red",
+        "Down" = "blue",
+        "NS" = "grey70"
+      )
+    ) +
+    theme_classic() +
+    labs(
+      title = paste0(seg, " - haci vs WT interaction"),
+      x = "Interaction log2 fold change",
+      y = "-log10 adjusted p-value"
+    )
+  
+  print(p)
+}
+```
+
 ## 4.1. Heatmap
 ### 4.1.1 DESeq2 for heatmap
 
@@ -102,6 +1215,24 @@ dat_ph_goi <- dat_phytohormone_goi |>
 # 1. Create DESeq2 object (Replace with your actual data frames)
 # countData: matrix of raw gene counts
 # colData: dataframe with sample metadata, last condition is the default comparison (so it's treat vs. ctrl)
+
+# make subset:
+
+# dat_subset_ph <- dat_raw_counts[
+#   match(dat_ph_goi$Gene_ID_v5, rownames(dat_raw_counts)),
+#   ,
+#   drop = FALSE
+# ]
+# 
+# dat_subset_ph <- dat_subset_ph[!is.na(dat_subset_ph$kn_c1_S1), , drop = FALSE]
+
+dat_subset_ph <- dat_raw_counts[
+  match(dat_goi$Gene_ID, rownames(dat_raw_counts)),
+  ,
+  drop = FALSE
+]
+
+dat_subset_ph <- dat_subset_ph[!is.na(dat_subset_ph$kn_c1_S1), , drop = FALSE]
 
 genotypes <- unique(dat_meta$genotype)
 segments <- unique(dat_meta$segment)
@@ -271,6 +1402,7 @@ dat_meta$segment <- factor(
 )
 
 
+
 # ---------------------------------------------------------
 # Function
 # ---------------------------------------------------------
@@ -369,48 +1501,47 @@ make_segment_plot <- function(segment_name,
   )
   
   
-  # -------------------------------------------------------
-  # 8. Get C vs W effect for WT
-  # -------------------------------------------------------
-  
-  res_WT <- results(
-    dds,
-    contrast = c(
-      "condition_group",
-      "c",
-      "w"
+# -------------------------------------------------------
+# 8. Get C vs W effects
+# -------------------------------------------------------
+
+res_WT <- results(
+  dds,
+  contrast = c(
+    "condition_group",
+    "c",
+    "w"
+  )
+)
+
+res_lox <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypelox.condition_groupc"
     )
   )
-  
-  
-  # -------------------------------------------------------
-  # 9. Get C vs W effect for lox
-  # -------------------------------------------------------
-  
-  res_lox <- results(
-    dds,
-    contrast = list(
-      c(
-        "condition_group_c_vs_w",
-        "genotypelox.condition_groupc"
-      )
+)
+
+res_haci <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypehaci.condition_groupc"
     )
   )
-  
-  
-  # -------------------------------------------------------
-  # 10. Get C vs W effect for haci
-  # -------------------------------------------------------
-  
-  res_haci <- results(
-    dds,
-    contrast = list(
-      c(
-        "condition_group_c_vs_w",
-        "genotypehaci.condition_groupc"
-      )
-    )
-  )
+)
+
+
+# -------------------------------------------------------
+# 9. Convert C vs W → W vs C
+# -------------------------------------------------------
+
+res_WT$log2FoldChange <- -res_WT$log2FoldChange
+res_lox$log2FoldChange <- -res_lox$log2FoldChange
+res_haci$log2FoldChange <- -res_haci$log2FoldChange
   
   
   # -------------------------------------------------------
@@ -499,7 +1630,7 @@ make_segment_plot <- function(segment_name,
   plot_data <- plot_data %>%
     left_join(
       goi %>%
-        select(Gene_ID, gene_name),
+        dplyr::select(Gene_ID, gene_name),
       by = "Gene_ID"
     )
   
@@ -588,21 +1719,21 @@ S1 <- make_segment_plot(
   segment_name = "S1",
   counts = dat_raw_counts,
   metadata = dat_meta,
-  goi = dat_ph_goi
+  goi = dat_goi
 )
 
 S2 <- make_segment_plot(
   segment_name = "S2",
   counts = dat_raw_counts,
   metadata = dat_meta,
-  goi = dat_ph_goi
+  goi = dat_goi
 )
 
 S3 <- make_segment_plot(
   segment_name = "S3",
   counts = dat_raw_counts,
   metadata = dat_meta,
-  goi = dat_ph_goi
+  goi = dat_goi
 )
 ```
 
@@ -619,15 +1750,422 @@ fig_S3
 ```{r}
 # save plots:
 
-# pdf(
-#   "S1_barplot2.pdf",
-#   width = 12,
-#   height = 5
-# )
-# 
-# print(fig_S1)
-# 
-# dev.off()
+pdf(
+  "S3_barplot1.pdf",
+  width = 16,
+  height = 5
+)
+
+print(fig_S3)
+
+dev.off()
+```
+
+Make plots with all the genes that are significant for both mutants in either segment for all segments:
+
+```{r}
+# list of genes:
+
+genes <- c("AOS1c", "AOS2a", "BX2", "BX3", "BX5", "BX6", "BX11", "TPS2", "TPS3", "LOX4", "LOX5")
+
+dat_goi1 <- subset(dat_goi, gene_name %in% genes)
+
+dat_ph1 <- subset(dat_phytohormone_goi, gene_name %in% genes)
+dat_ph2 <- dat_ph1[,c(6, 2, 1)]
+
+colnames(dat_ph2)[1] <- "Gene_ID"
+
+dat_genes_goi <- rbind(dat_goi1, dat_ph2)
+
+```
+
+This is from the function below - it's a tiny bit different this function
+```{r}
+# directly change input here
+
+S1 <- make_segment_plot(
+  segment_name = "S1",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+
+S2 <- make_segment_plot(
+  segment_name = "S2",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+
+S3 <- make_segment_plot(
+  segment_name = "S3",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+```
+
+```{r}
+fig_S1_1 <- S1$plot
+fig_S2_1 <- S2$plot
+fig_S3_1 <- S3$plot
+
+fig_S1_1
+fig_S2_1
+fig_S3_1
+```
+
+```{r}
+# save plots:
+
+pdf(
+  "S2_barplot3.pdf",
+  width = 16,
+  height = 5
+)
+
+print(fig_S2_1)
+
+dev.off()
+```
+
+```{r}
+
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+# Make sure count matrix follows metadata order
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta)]
+
+# Factors
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+
+
+
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+make_segment_plot <- function(segment_name,
+                              counts,
+                              metadata,
+                              goi,
+                              padj_cutoff = 0.05) {
+  
+  # -------------------------------------------------------
+  # 1. Subset metadata and counts for this segment
+  # -------------------------------------------------------
+  
+  meta_seg <- metadata %>%
+    filter(segment == segment_name)
+  
+  counts_seg <- counts[, rownames(meta_seg)]
+  
+  
+  # -------------------------------------------------------
+  # 2. Create DESeq2 object
+  # -------------------------------------------------------
+  
+  dds <- DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group +
+              genotype:condition_group
+  )
+  
+  
+  # -------------------------------------------------------
+  # 3. Filter low-count genes
+  # -------------------------------------------------------
+  
+  keep <- rowSums(counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+  
+  
+  # -------------------------------------------------------
+  # 4. Run DESeq2
+  # -------------------------------------------------------
+  
+  dds <- DESeq(dds)
+  
+  
+  # -------------------------------------------------------
+  # 5. Interaction tests
+  #
+  # Does the C-vs-W response differ between:
+  #   WT vs lox
+  #   WT vs haci
+  # -------------------------------------------------------
+  
+  res_lox_interaction <- results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  res_haci_interaction <- results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  
+  # -------------------------------------------------------
+  # 6. Significant interaction genes
+  # -------------------------------------------------------
+  # 
+  # sig_lox <- rownames(res_lox_interaction)[
+  #   !is.na(res_lox_interaction$padj) &
+  #     res_lox_interaction$padj < padj_cutoff
+  # ]
+  # 
+  # sig_haci <- rownames(res_haci_interaction)[
+  #   !is.na(res_haci_interaction$padj) &
+  #     res_haci_interaction$padj < padj_cutoff
+  # ]
+  
+  
+  # Significant in WT-vs-lox OR WT-vs-haci
+  # sig_genes <- union(
+  #   sig_lox,
+  #   sig_haci
+  # )
+  
+  
+  # -------------------------------------------------------
+  # 7. Restrict to genes of interest
+  # -------------------------------------------------------
+  
+  # sig_genes <- intersect(
+  #   sig_genes,
+  #   goi$Gene_ID
+  # )
+ 
+  # Just use the predefined genes instead:
+  sig_genes <- goi$Gene_ID 
+  
+# -------------------------------------------------------
+# 8. Get C vs W effects
+# -------------------------------------------------------
+
+res_WT <- results(
+  dds,
+  contrast = c(
+    "condition_group",
+    "c",
+    "w"
+  )
+)
+
+res_lox <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypelox.condition_groupc"
+    )
+  )
+)
+
+res_haci <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypehaci.condition_groupc"
+    )
+  )
+)
+
+
+# -------------------------------------------------------
+# 9. Convert C vs W → W vs C
+# -------------------------------------------------------
+
+res_WT$log2FoldChange <- -res_WT$log2FoldChange
+res_lox$log2FoldChange <- -res_lox$log2FoldChange
+res_haci$log2FoldChange <- -res_haci$log2FoldChange
+  
+  
+  # -------------------------------------------------------
+  # 11. Create plotting dataframe
+  #
+  # Keep both log2FC and lfcSE
+  # -------------------------------------------------------
+  
+  plot_data <- bind_rows(
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "WT",
+      log2FC = res_WT[sig_genes, "log2FoldChange"],
+      lfcSE = res_WT[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "lox",
+      log2FC = res_lox[sig_genes, "log2FoldChange"],
+      lfcSE = res_lox[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "haci",
+      log2FC = res_haci[sig_genes, "log2FoldChange"],
+      lfcSE = res_haci[sig_genes, "lfcSE"]
+    )
+  )
+  
+  # ------------------------------------------------------- 
+  # 12. Add interaction p-values to plotting data
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    padj_lox_vs_WT = res_lox_interaction[Gene_ID, "padj"],
+    padj_haci_vs_WT = res_haci_interaction[Gene_ID, "padj"]
+  )
+  
+  
+  # -------------------------------------------------------
+  # 13. Create a significance label:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    significance = case_when(
+      genotype == "lox" & padj_lox_vs_WT < 0.001  ~ "***",
+      genotype == "lox" & padj_lox_vs_WT < 0.01   ~ "**",
+      genotype == "lox" & padj_lox_vs_WT < 0.05   ~ "*",
+      
+      genotype == "haci" & padj_haci_vs_WT < 0.001  ~ "***",
+      genotype == "haci" & padj_haci_vs_WT < 0.01   ~ "**",
+      genotype == "haci" & padj_haci_vs_WT < 0.05   ~ "*",
+      
+      TRUE ~ ""
+    )
+  )
+  
+  # -------------------------------------------------------
+  # 14. Calculate vjust in data:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    star_y = ifelse(
+      log2FC >= 0,
+      log2FC + 1.96 * lfcSE,
+      log2FC - 1.96 * lfcSE
+    ),
+    star_vjust = ifelse(
+      log2FC >= 0,
+      -0.3,
+      1.3
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 15. Add gene names
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+    left_join(
+      goi %>%
+        dplyr::select(Gene_ID, gene_name),
+      by = "Gene_ID"
+    )
+  
+  
+  # -------------------------------------------------------
+  # 16. Plot
+  # -------------------------------------------------------
+  
+  p <- ggplot(
+    plot_data,
+    aes(
+      x = gene_name,
+      y = log2FC,
+      fill = genotype
+    )
+  ) +
+    
+    geom_col(
+      position = position_dodge(width = 0.8)
+    ) +
+    
+    geom_errorbar(
+      aes(
+        ymin = log2FC - 1.96 * lfcSE,
+        ymax = log2FC + 1.96 * lfcSE
+      ),
+      position = position_dodge(width = 0.8),
+      width = 0.25
+    ) +
+    
+    geom_text(
+      aes(
+        label = significance,
+        y = star_y,
+        vjust = star_vjust
+      ),
+      position = position_dodge(width = 0.8),
+      size = 4
+    ) +
+    
+    geom_hline(
+      yintercept = 0,
+      linewidth = 0.5
+    ) +
+    
+    theme_classic() +
+    
+    labs(
+      title = segment_name,
+      x = NULL,
+      y = "log2 fold change (C vs W)",
+      fill = "Genotype"
+    ) +
+    
+    theme(
+      axis.text.x = element_text(
+        angle = 90,
+        hjust = 1,
+        vjust = 0.5
+      )
+    )
+  
+  
+  # -------------------------------------------------------
+  # 17. Return everything
+  # -------------------------------------------------------
+  
+  return(
+    list(
+      dds = dds,
+      significant_genes = sig_genes,
+      interaction_lox = res_lox_interaction,
+      interaction_haci = res_haci_interaction,
+      plot_data = plot_data,
+      plot = p
+    )
+  )
+}
 ```
 
 
