@@ -1,0 +1,643 @@
+---
+title: "Over_midrib_BXs"
+author: "Sara Hoefer"
+format: html
+editor: visual
+---
+
+# Packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lmtest)
+library(tidyverse)
+library(broom)
+library(stringr)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(ARTool)
+library(multcomp)
+library(multcompView)
+```
+
+# Data
+## Load data
+```{r}
+
+dat_bx <- read.table("04_over_midrib/01_data/20261102_PM_SH_over_the_midrib.csv", 
+                       sep = ",", fill = TRUE)
+```
+
+## Wrangle data
+
+1. Make a column "comp" which contains the compound name
+```{r}
+dat_bx1 <- dat_bx |>
+  mutate(comp = if_else(
+    str_detect(V1, "^Compound \\d+:"),  # indentify rows starting with "Compound <number>:"
+    str_remove(V1, "^Compound \\d+:\\s*"),  # removes the "Compound <number>:" prefix, leaving only the compound name
+    NA_character_
+  )) |>
+  fill(comp, .direction = "down")  # put the compound name into the "comp" column, until the next "Compound <number>:" row
+
+```
+
+2. Remove unnecessary rows, rename columns
+
+```{r}
+dat_bx2 <- dat_bx1 |>
+  filter(str_starts(V1, "2026"))  # this filters for rows in V1 that start with "2026"
+
+colnames(dat_bx2) <- c("name", "ug_mL", "comp")
+```
+
+3. Separate "name" column to obtain sample info
+
+```{r}
+dat_bx3 <- dat_bx2 |>
+  separate(col = "name",
+           into = c("date", "analyst", "technician", "over", "the", "midrib", "genotype", "segment", "treat_rep"),
+           sep = "_") |>
+  separate(col = "treat_rep",
+           into = c("treat", "rep"),
+           sep = "(?<=\\D)(?=\\d)")
+
+dat_bx4 <- dat_bx3[,!names(dat_bx3) %in% c("over", "the", "midrib")]
+
+```
+
+4. Transform ug/mL to ug/g FW:
+
+(We extracted 30 ug tissue in 300 uL extraction buffer, and then we diluted this 1:10. This means we have 10 mg of tissue per mL of extraction buffer in the end. 
+To get ug per gram fresh weight, we calculate ug/mL * 100 = ug/g FW)
+
+```{r}
+dat_bx4$ug_mL <- as.numeric(dat_bx4$ug_mL)
+
+dat_bx5 <- dat_bx4 |>
+  mutate(ug_g_fw = ug_mL * 100)
+
+```
+
+```{r}
+dat_bx6 <- dat_bx5 %>%
+  mutate(
+    genotype = factor(genotype, levels = c("KN", "haci", "lox")),
+    treat = factor(treat, levels = c("c", "w")),
+    comp = factor(comp)
+  )
+```
+
+```{r}
+dat_bx7 <- subset(dat_bx6, !is.na(rep))
+```
+
+```{r}
+dat_bx7 <- dat_bx7 |>
+  mutate(plant_id = interaction(genotype, treat, rep, drop = TRUE, sep = "_"))
+```
+
+
+## Check data
+
+```{r}
+# Check blanks:
+
+which(dat_bx5$ug_mL > 0)
+
+which(dat_bx5$ug_mL %in% c("BLANK1", "BLANK2") > 0)
+
+```
+
+# Analysis & Plots
+
+## 1. Comparison between segments: Are BXs induced by GLVs over the midrib (without any vascular connection)?
+
+The answer is no lmao. -> I should probably do metabolomics and look into other markers of induction/priming; since BXs are very localized, but can be induced by GLVs idk man.
+
+```{r}
+# Exploratory plot
+ggplot(dat_bx7, aes(x = interaction(genotype, treat),
+                   y = ug_g_fw)) +
+  geom_jitter(width = 0.12, height = 0, size = 2, alpha = 0.7) +
+  facet_wrap(~ comp, scales = "free_y") +
+  labs(
+    x = "Experimental group",
+    y = "Concentration (µg/g fresh weight)",
+    title = "Targeted metabolite concentrations"
+  ) +
+  theme_bw()
+```
+
+Check which BXs were measured
+```{r}
+compounds <- unique(dat_bx7$comp[dat_bx7$ug_g_fw > 0]); compounds
+
+compounds1 <- compounds[compounds != "MBOA"]
+
+
+```
+Plot them:
+
+```{r}
+
+```
+
+```{r}
+palette <- c("#D52D00", "#FF9A56", "#FFFFFF", "#D162A4", "#A30262") # this is completely optional, but you can choose your own pretty colors if you want to :)
+```
+
+```{r}
+dat_bx8 <- subset(dat_bx7, comp %in% compounds1)
+```
+
+
+
+```{r}
+# Fit the same model to all compounds:
+
+# results <- dat_bx8 %>%
+#   group_by(comp) %>%
+#   group_modify(~ {
+#     
+#     model <- log1p(
+#       ug_g_fw ~ genotype * treat * segment,
+#       data = .x
+#     )
+#     
+#     tidy(model)
+#     
+#   }) %>%
+#   ungroup()
+```
+
+model:
+
+```{r}
+
+
+# make log-transformed:
+
+dat_bx8$log_ug_g_fw <- log1p(dat_bx8$ug_g_fw)
+
+# Square root
+dat_bx8$sqrt_ug_g_fw <- sqrt(dat_bx8$ug_g_fw)
+
+# Log10 with pseudocount
+dat_bx8$log10_ug_g_fw <- log10(dat_bx8$ug_g_fw + 0.01)
+
+# Fit a separate model for each compound
+models <- dat_bx8 %>%
+  group_by(comp) %>%
+  group_modify(~ {
+    model <- lmer(
+      log_ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = .x
+    )
+
+    emm <- emmeans(
+      model,
+      ~ treat * segment | genotype
+    )
+
+    results <- pairs(emm, adjust = "tukey")
+
+    as.data.frame(results)
+  }) %>%
+  ungroup()
+
+
+```
+
+Check the fit of the models:
+```{r}
+par(mfrow = c(2, 2))
+
+for (compounds1 in unique(dat_bx8$comp)) {
+  
+  dat_one <- dat_bx8 %>%
+    filter(comp == compounds1)
+  
+  model <- lmer(
+      ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = dat_one
+    )
+  
+  plot(
+    model,
+    main = compounds1
+  )
+}
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+par(mfrow = c(2, 2))
+
+for (compounds1 in unique(dat_bx8$comp)) {
+
+  dat_one <- dat_bx8 %>%
+    filter(comp == compounds1)
+
+  model <- lmer(
+    log_ug_g_fw ~ genotype * treat * segment +
+      (1 | plant_id),
+    data = dat_one
+  )
+
+  qqnorm(residuals(model), main = compound)
+  qqline(residuals(model))
+}
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+par(mfrow = c(2, 4))
+
+for (compounds1 in unique(dat_bx8$comp)) {
+
+  dat_one <- dat_bx8 %>%
+    filter(comp == compounds1)
+
+  model <- lmer(
+    log_ug_g_fw ~ genotype * treat * segment +
+      (1 | plant_id),
+    data = dat_one
+  )
+
+  # Normality of residuals
+  qqnorm(residuals(model), main = paste(compounds1, "- QQ plot"))
+  qqline(residuals(model))
+
+  # Homogeneity of variance
+  plot(
+    fitted(model),
+    residuals(model),
+    main = paste(compounds1, "- Variance"),
+    xlab = "Fitted values",
+    ylab = "Residuals"
+  )
+  abline(h = 0, lty = 2)
+}
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+transformations <- c(
+  "log_ug_g_fw",
+  "log10_ug_g_fw",
+  "sqrt_ug_g_fw"
+)
+
+diagnostics <- lapply(unique(dat_bx8$comp), function(compounds1) {
+  
+  lapply(transformations, function(trans) {
+  
+  dat_one <- dat_bx8 %>%
+    filter(comp == compounds1)
+  
+   model_formula <- as.formula(
+      paste(trans, "~ genotype * treat * segment + (1 | plant_id)")
+    )
+  
+   model <- lmer(
+      model_formula,
+      data = dat_one
+    )
+
+  
+  # model <- lmer(
+  #   log_ug_g_fw ~ genotype * treat * segment +
+  #     (1 | plant_id),
+  #   data = dat_one
+  # )
+  
+  # Shapiro-Wilk on model residuals
+  
+   r <- residuals(model)
+  
+  shapiro_p <- NA_real_
+  
+  if (length(r) >= 3 && length(unique(r)) > 1) {
+    shapiro_p <- shapiro.test(r)$p.value
+  }
+  
+  # Levene's test across experimental groups
+  
+   levene <- car::leveneTest(
+      as.formula(
+        paste(trans, "~ interaction(genotype, treat, segment)")
+      ),
+      data = dat_one,
+      center = median
+    )
+
+    levene_p <- levene[1, "Pr(>F)"]
+  
+  # levene_p <- NA_real_
+  # 
+  # if (nrow(dat_one) > 1) {
+  #   levene <- car::leveneTest(
+  #     log_ug_g_fw ~ interaction(genotype, treat, segment),
+  #     data = dat_one,
+  #     center = median
+  #   )
+  # 
+  #   levene_p <- levene[1, "Pr(>F)"]
+  # }
+
+  tibble(
+    compound = compounds1,
+    shapiro_p = shapiro_p,
+    levene_p = levene_p
+  )
+  })
+})
+
+diagnostics <- bind_rows(diagnostics)
+```
+
+```{r}
+
+unique(dat_bx8$comp)
+dat_hmboaglc <- subset(dat_bx8, comp == "HMBOA-Glc")
+```
+
+
+CLD:
+
+```{r}
+
+# Fit a separate model for each compound
+models <- dat_bx8 %>%
+  group_by(comp) %>%
+  group_modify(~ {
+    model <- lmer(
+      log_ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = .x
+    )
+
+    emm <- emmeans(
+      model,
+      ~ treat * segment | genotype
+    )
+
+    results <- pairs(emm, adjust = "tukey")
+
+    as.data.frame(results)
+  }) %>%
+  ungroup()
+
+
+```
+
+
+```{r}
+# log1p transform:
+
+dat_bx8$log_ug_g_fw <- log1p(dat_bx8$ug_g_fw)
+
+# set up model
+models <- dat_bx8 |>
+  group_by(comp) |>
+  group_modify(~ {
+    model <- lmer(
+      log_ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = .x
+    )
+
+    emm <- emmeans(
+      model,
+      ~ treat * segment | genotype
+    )
+
+    # results <- pairs(emm, adjust = "tukey")
+    results <- cld(object = emm,
+                           adjust = "Tukey",
+                           Letters = letters,
+                           alpha = 0.05)
+
+    as.data.frame(results)
+  }) |>
+  ungroup()
+
+
+models
+
+```
+
+```{r}
+# make df for plot:
+
+cld_data <- models |>
+  left_join(
+    dat_bx8 |>
+      group_by(comp, genotype, treat, segment) |>
+      summarise(
+        y = max(ug_g_fw, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("comp", "genotype", "treat", "segment")
+  ) |>
+  mutate(y = y + 0.1 * abs(y))
+```
+
+
+```{r}
+summary_plot <- ggplot(dat_bx8, aes (x = treat, y = ug_g_fw, fill = segment)) +
+  facet_wrap(~ genotype + comp, scales = "free_y") +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    alpha = 1
+  ) +
+  geom_text(
+  data = cld_data,
+  aes(x = treat, y = y, label = .group, group = segment),
+  position = position_dodge(width = 0.8),
+  inherit.aes = FALSE,
+  size = 4
+) +
+  geom_jitter( 
+             position = position_jitterdodge(jitter.width = 0.15,
+                                             dodge.width = 0.8),
+             alpha = 0.4,
+             shape = 16
+  ) +
+  scale_fill_manual(values = c(palette[2], palette[4])) +
+  theme(text = element_text(size = 12),
+        legend.position = "bottom",
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 16),
+        axis.text.x = element_text(color = 'black'),
+        axis.text.y = element_text(color = 'black')) +
+  labs(x = "Genotype", y = "µg/g FW", fill = "Treatment")
+
+summary_plot
+```
+
+
+## 2. Comparison of quantities between genotypes:
+
+Make CLD for this:
+
+```{r}
+# log1p transform:
+
+dat_bx8$log_ug_g_fw <- log1p(dat_bx8$ug_g_fw)
+
+# set up model
+models_genotype <- dat_bx8 |>
+  group_by(comp) |>
+  group_modify(~ {
+    model <- lmer(
+      log_ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = .x
+    )
+
+    emm <- emmeans(
+      model,
+      ~ segment * genotype | treat
+    )
+
+    # results <- pairs(emm, adjust = "tukey")
+    results <- cld(object = emm,
+                           adjust = "Tukey",
+                           Letters = letters,
+                           alpha = 0.05)
+
+    as.data.frame(results)
+  }) |>
+  ungroup()
+
+
+models_genotype
+
+```
+
+```{r}
+# make df for plot:
+
+cld_data2 <- models_genotype |>
+  left_join(
+    dat_bx8 |>
+      group_by(comp, genotype, treat, segment) |>
+      summarise(
+        y = max(ug_g_fw, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("comp", "genotype", "treat", "segment")
+  ) |>
+  mutate(y = y + 0.1 * abs(y))
+```
+
+Plot:
+
+```{r}
+plot_genotypes <- ggplot(dat_bx8, aes (x = segment, y = ug_g_fw, fill = genotype)) +
+  facet_wrap(~ treat + comp, scales = "free_y") +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    alpha = 1
+  ) +
+  geom_text(
+  data = cld_data2,
+  aes(x = segment, y = y, label = .group, group = genotype),
+  position = position_dodge(width = 0.8),
+  inherit.aes = FALSE,
+  size = 4
+) +
+  geom_jitter( 
+             position = position_jitterdodge(jitter.width = 0.15,
+                                             dodge.width = 0.8),
+             alpha = 0.4,
+             shape = 16
+  ) +
+  # scale_fill_manual(values = c(palette[2], palette[4])) +
+  theme(text = element_text(size = 12),
+        legend.position = "bottom",
+        panel.background = element_rect(fill = "white", colour = "white"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "white", colour = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 16),
+        axis.text.x = element_text(color = 'black'),
+        axis.text.y = element_text(color = 'black')) +
+  labs(x = "Genotype", y = "µg/g FW", fill = "Treatment")
+
+plot_genotypes
+```
+
+
+
+
+```{r}
+# log1p transform:
+
+dat_bx8$log_ug_g_fw <- log1p(dat_bx8$ug_g_fw)
+
+# set up model
+models <- dat_bx8 |>
+  group_by(comp) |>
+  group_modify(~ {
+    model <- lmer(
+      log_ug_g_fw ~ genotype * treat * segment +
+        (1 | plant_id),
+      data = .x
+    )
+
+    emm <- emmeans(
+      model,
+      ~ treat * segment | genotype
+    )
+
+    # results <- pairs(emm, adjust = "tukey")
+    results <- cld(object = emm,
+                           adjust = "Tukey",
+                           Letters = letters,
+                           alpha = 0.05)
+
+    as.data.frame(results)
+  }) |>
+  ungroup()
+
+
+models
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
