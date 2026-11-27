@@ -1,0 +1,146 @@
+---
+title: "over_midrib_volatiles"
+author: "Sara Hoefer"
+format: html
+editor: visual
+---
+
+# Load packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(ggpubr)
+library(ARTool)
+library(rcompanion)
+```
+
+# Define Functions
+```{r}
+se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
+
+fun_hal <- function (x) {(x - (-286.8851)) / 65.1187}
+fun_hol <- function (x) {(x - 284.2803) / 422.3727}
+fun_hac <- function (x) {(x - 249.5578) / 839.3971}
+```
+
+```{r}
+fun_process_data <- function(dat) {  # this function wrangles data coming from the online software
+  
+  dat |>
+    filter(!grepl("(B1|B2|B3)$", Sample)) |>  # remove blanks
+    mutate(
+      area = ifelse(is.na(Area), 0, Area)  # set NA (=not detected) as 0
+    ) |>
+    dplyr::select(  # exclude two unnecessary columns
+      -Qualifier_Status,
+      -Qualifier_Message
+    ) |>
+    separate(  # separate the column Sample into columns date, segment, iteration
+      col = Sample,
+      into = c("date","iteration"),
+      sep = "_"
+    ) |>
+    mutate(  # convert iteration to minutes -> one takes 15 mins to measure, so we average the time
+      iteration = as.numeric(iteration),
+      time_min = iteration * 15 + 90,  # add 90, cuz incubation for 90 mins after wounding, before cut and put in vials
+      quant = ifelse(
+        Compound == "HAL", fun_hal(area),
+        ifelse(
+          Compound == "HOL", fun_hol(area),
+          ifelse(Compound == "HAC", fun_hac(area), area)
+        )
+      ),
+      quant = ifelse(area == 0, 0, quant)
+    )
+}
+```
+
+# Load data
+
+```{r}
+getwd()
+dat_mr1 <- read.csv("01_SPME_GC_MS/01_data/01_data_onlinesoftware/20261125_results.csv",
+                    header = T, sep = ","
+                    )
+```
+
+```{r}
+dat_mr1_1 <- fun_process_data(dat_mr1)
+
+# add col "segment", odd iterations are S1 (wounded), even iterations are S2 (unwounded)
+
+dat_mr1_2 <- dat_mr1_1 |>
+  mutate(segment = ifelse(
+    iteration %% 2 == 0, "S2", "S1"  # the %% operator divides by 2, if it's == 0 it's even (3/2 = 1 and 1 left over kind of)
+  ))
+```
+
+plot:
+
+```{r}
+# plot combined dat:
+
+pal1 <- c("#ffb703","#8ecae6", "#fd9e02","#219ebc",
+          "#fb8500", "#126782")
+
+dat_mr1_2$segment <- as.factor(dat_mr1_2$segment)
+dat_mr1_2$Compound <- as.factor(dat_mr1_2$Compound)
+
+
+dat_plot <- dat_mr1_2 |>
+  group_by(segment, time_min, Compound) |>
+  mutate(mean_a = mean(quant),
+         se_a = se(quant)) |>
+  ungroup()
+
+dat_plot <- subset(dat_plot, Compound != "D-Limonene")
+
+max(dat_plot$time_min)
+
+plot1 <- ggplot(dat_plot, aes(x = time_min, y = mean_a, fill = segment, color = segment)) +
+  facet_wrap(~ Compound, scales = "free_y") +
+  # geom_errorbar(aes(ymin=mean_a-se_a, ymax= mean_a + se_a), width=0) +
+#   geom_ribbon(aes(ymin = mean_a - se_a, 
+# 		    ymax = mean_a + se_a),
+# 		    alpha = 0.3,
+# 		    colour = NA) +
+  geom_point() + geom_line(linewidth = 0.7) + 
+  scale_color_manual(values = pal1) +
+  scale_x_continuous(limits=c(0,600), expand = c(0,0),
+                     breaks=seq(0,600,60)) +
+  scale_fill_manual(values = pal1) +
+   theme(text = element_text(size=12),
+        legend.position = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white",
+                                        color = "white"),
+        axis.line = element_line(colour = "black"), 
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12),
+        strip.placement = "outside",
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12)) +
+  labs(x = "time (min)", y = "area")
+
+plot1
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,3324 @@
+---
+title: "RNAseq local response"
+author: "Sara Hoefer"
+date: "2026-07-27"
+output: html_document
+---
+
+This script analyzes RNAseq (transcriptomics) data. It's my first time doing this lol
+
+----------------------------
+HOW TO USE THIS SCRIPT
+Always run Sections 1. Packages, 2. Functions, 3. Data
+Sections 4. Differential Expression and 5. Functional Analyses should run independently of each other.
+
+---------------------------
+
+To write section 4 of this script, I heavily depended on AI. Section 5.1. is based off this v helpful github post:
+https://aseetharam.github.io/bioinformatics/run-go-enrichment-maize/
+
+The B73_GO.out data was downloaded from (you need to use the command line):
+https://download.maizegdb.org/GeneFunction_and_Expression/Pannzer_GO_Terms/B73_GO.out
+
+
+# 1. Packages
+```{r}
+library(pheatmap)
+library(ggplot2)
+library(DESeq2)
+library(dplyr)
+library(RColorBrewer) # to change colors in pheatmap
+library(tidyverse)
+library(tibble)
+library(scales)
+library(ggrepel)
+library(clusterProfiler)
+
+## to install DESeq2:
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("DESeq2")
+
+# bioconductor:
+
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+#
+# BiocManager::install("topGO")
+
+# bioconductor:
+
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+# install.packages("BiocManager")
+# 
+# BiocManager::install("clusterProfiler")
+
+library(topGO)
+```
+
+# 2. Functions
+```{r}
+se <- function (x) {sd (x,na.rm =TRUE) / sqrt (length(na.exclude (x)))}
+```
+
+
+# 3. Data
+## 3.1. Load data
+
+```{r}
+dat_raw_counts <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_counts.tsv",
+                             header = T, row.names = 1, sep = "\t")
+
+dat_fpkm <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_gene_fpkm_all_samples.tsv",
+                             header = T, row.names = 1, sep = "\t")
+
+dat_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/tristan_heatmap_gene_categories.csv",
+                      header = T, sep = ",")  # first list of genes involved in defense from Tristan
+
+dat_phytohormone_goi <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/phytohormone_candidates_gene_list.csv",
+                                   header = T, sep = ",")  # second list of genes involved in defense from Tristan
+
+dat_meta <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/01_data/within_leaf_analysis_ready_info.csv",
+                             header = T, sep = ",")  # metadata
+
+dat_b73_go <- read.table("C:/Users/sarah/OneDrive/Dokumente/01_Uni/00_PhD/thesis/03_local_response_RNAseq/B73_GO.out",
+                         quote = '"',
+                             header = T, sep = "\t",
+                         colClasses = c('goid' = 'character', 'qpid' = 'character'))
+```
+
+## 3.2. Wrangle data
+
+```{r}
+# create col "segment" in metadata
+
+dat_meta$segment <- sub(".*(S.).*", "\\1", dat_meta$sample_description)
+
+
+# change phytohormone Gene_ID_v5 to Gene_ID
+
+dat_ph_goi <- dat_phytohormone_goi |>
+  mutate(Gene_ID = Gene_ID_v5)
+
+# combine the two:
+
+goi_combined <- unique(c(
+  dat_goi$Gene_ID,
+  dat_ph_goi$Gene_ID
+))
+
+dat_goi_combined <- full_join(
+  dat_goi,
+  dat_ph_goi,
+  by = "Gene_ID"
+)
+
+dat_goi_combined <- subset(dat_goi_combined, !is.na(Gene_ID))
+
+dat_goi_combined <- subset(dat_goi_combined, Gene_ID != "")
+
+dat_goi_combined <- dat_goi_combined |>
+  mutate(gene_name = ifelse(is.na(gene_name.x), gene_name.y, gene_name.x)) 
+```
+
+
+
+
+
+# 4. Differential Expression Analyses:
+
+## 4.1. DESeq object w/ interaction
+
+```{r}
+rownames(dat_meta) <- dat_meta$sample_description
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta), drop = FALSE]
+
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+```
+
+Create dds_list:
+
+```{r}
+
+# Create DESeq2 objects for each segment
+dds_list <- list()
+
+for (seg in unique(as.character(dat_meta$segment))) {
+
+  # Subset metadata and counts
+  meta_seg <- dat_meta[
+    as.character(dat_meta$segment) == seg,
+    ,
+    drop = FALSE
+  ]
+
+  counts_seg <- dat_raw_counts[
+    ,
+    rownames(meta_seg),
+    drop = FALSE
+  ]
+
+  # Ensure sample order matches
+  meta_seg <- meta_seg[colnames(counts_seg), , drop = FALSE]
+
+  # Set factors
+  meta_seg$genotype <- droplevels(factor(meta_seg$genotype))
+  meta_seg$condition_group <- droplevels(factor(meta_seg$condition_group))
+
+  # Create DESeq2 dataset
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group + genotype:condition_group
+  )
+
+  # Filter low-count genes
+  keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
+  dds <- dds[keep, ]
+
+  # Run DESeq2
+  dds <- DESeq2::DESeq(dds)
+
+  # Store fitted object
+  dds_list[[seg]] <- dds
+}
+
+```
+
+### 4.1.1. PCA
+
+```{r}
+pal <- c("#1F66A9", "#E08201", "#8dc5e4ff")
+```
+
+```{r}
+for (seg in names(dds_list)) {
+
+  dds_pca <- dds_list[[seg]]
+
+  meta_seg <- as.data.frame(SummarizedExperiment::colData(dds_pca))
+
+  vsd <- DESeq2::vst(
+    dds_pca,
+    blind = TRUE
+  )
+
+  pca <- prcomp(
+    t(SummarizedExperiment::assay(vsd))
+  )
+
+  pca_data <- data.frame(
+    Sample = rownames(pca$x),
+    PC1 = pca$x[, 1],
+    PC2 = pca$x[, 2],
+    genotype = meta_seg[rownames(pca$x), "genotype"],
+    condition_group = meta_seg[rownames(pca$x), "condition_group"]
+  )
+
+  percent_var <- 100 * pca$sdev^2 / sum(pca$sdev^2)
+
+  p <- ggplot(
+    pca_data,
+    aes(
+      x = PC1,
+      y = PC2,
+      fill = genotype,
+      shape = condition_group
+    )
+  ) +
+    geom_point(size = 4, color = "black",
+               stroke = 1) +
+    scale_fill_manual(values = pal) +
+    scale_shape_manual(
+    values = c(
+      "w" = 21,
+      "c" = 23
+    )
+  ) +
+    xlab(
+      paste0(
+        "PC1 (",
+        round(percent_var[1], 1),
+        "%)"
+      )
+    ) +
+    ylab(
+      paste0(
+        "PC2 (",
+        round(percent_var[2], 1),
+        "%)"
+      )
+    ) +
+    ggtitle(
+      paste0(seg, " - PCA")
+    ) +
+    theme(text=element_text(size=12),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black"), 
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=12),
+        axis.text.x=element_text(color='black'),
+        axis.text.y=element_text(color='black')) +
+    theme_classic()
+  
+  print(p)
+  
+  # ggsave(
+  #   filename = paste0("03_local_response_RNAseq/02_plots/PCA_", seg, ".svg"),
+  #   plot = p,
+  #   width = 12,
+  #   height = 8,
+  #   units = "cm")
+}
+```
+
+
+
+### 4.1.2. Volcano plots
+
+Inspired by: https://www.datanovia.com/learn/bioinformatics/bulk-rna-seq/differential-expression-deseq2
+
+Extract results for all coefficients:
+
+```{r}
+
+# Extract results for all coefficients
+res_list <- list()
+
+for (seg in names(dds_list)) {
+
+  dds <- dds_list[[seg]]
+
+  res_list[[seg]] <- lapply(
+    DESeq2::resultsNames(dds),
+    function(coef) {
+
+      if (coef == "Intercept") return(NULL)
+
+      as.data.frame(
+        DESeq2::results(dds, name = coef)
+      )
+    }
+  )
+
+  names(res_list[[seg]]) <- DESeq2::resultsNames(dds)
+
+  res_list[[seg]] <- Filter(
+    Negate(is.null),
+    res_list[[seg]]
+  )
+}
+
+```
+
+
+
+updated:
+
+```{r}
+
+# Volcano plot function
+plot_volcano <- function(res, title, filename, genes = NULL,
+                         x_limits = NULL) {
+
+  vol <- as.data.frame(res)
+  vol$symbol <- rownames(vol)
+
+  vol <- vol[
+    !is.na(vol$padj) & !is.na(vol$log2FoldChange),
+  ]
+
+  if (!is.null(genes)) {
+    vol <- vol[vol$symbol %in% genes, ]
+  }
+
+  if (nrow(vol) == 0) return(NULL)
+
+  # Classify genes
+  vol$status <- "Not sig."
+  vol$status[vol$padj < 0.05 & vol$log2FoldChange > 1] <- "Up"
+  vol$status[vol$padj < 0.05 & vol$log2FoldChange < -1] <- "Down"
+
+  # Count significant genes
+  n_up <- sum(vol$status == "Up")
+  n_down <- sum(vol$status == "Down")
+
+  p <- ggplot(vol, aes(log2FoldChange,
+                       -log10(pmax(padj, 1e-300)))) +
+
+    geom_point(
+      data = vol[vol$status == "Not sig.", ],
+      colour = "grey85",
+      size = 0.35,
+      alpha = 0.2
+    ) +
+
+    geom_point(
+      data = vol[vol$status != "Not sig.", ],
+      aes(colour = status),
+      size = 0.8,
+      alpha = 0.8
+    ) +
+
+    geom_vline(
+      xintercept = c(-1, 1),
+      linetype = "dashed",
+      colour = "grey60"
+    ) +
+
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dashed",
+      colour = "grey60"
+    ) +
+
+    # Upregulated count: upper right
+    annotate(
+      "text",
+      x = Inf, y = Inf,
+      label = paste0("Up: ", n_up),
+      hjust = 1.1,
+      vjust = 1.5,
+      size = 4,
+      fontface = "bold",
+      colour = "#EF4444"
+    ) +
+
+    # Downregulated count: upper left
+    annotate(
+      "text",
+      x = -Inf, y = Inf,
+      label = paste0("Down: ", n_down),
+      hjust = -0.1,
+      vjust = 1.5,
+      size = 4,
+      fontface = "bold",
+      colour = "#3A86D4"
+    ) +
+
+    scale_colour_manual(
+      values = c(Up = "#EF4444", Down = "#3A86D4")
+    ) +
+
+    labs(
+      title = title,
+      x = expression(log[2]~fold~change),
+      y = expression(-log[10]~adjusted~p)
+    ) +
+
+    theme_minimal(base_size = 12) +
+
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5),
+      plot.margin = margin(12, 15, 12, 15)
+    ) +
+
+    coord_cartesian(
+      xlim = x_limits,
+      clip = "off"
+    )
+
+  # Save square SVG
+  ggsave(
+    filename,
+    p,
+    width = 14,
+    height = 14,
+    units = "cm",
+    device = "svg"
+  )
+
+  print(p)
+
+  return(p)
+}
+
+
+
+# Store results and WT wound-response genes
+wt_wound_genes <- list()
+
+within_results <- list()
+mutant_results <- list()
+
+dir.create("GO_plots", showWarnings = FALSE)
+
+# -----------------------------------------
+# 1. Calculate all DESeq2 results first
+# -----------------------------------------
+
+for (seg in c("S1", "S2", "S3")) {
+
+  dds <- dds_list[[seg]]
+  rn <- DESeq2::resultsNames(dds)
+
+  # Within-genotype wounded vs control
+  for (gt in c("kn", "lox", "haci")) {
+
+    contrast_vec <- setNames(rep(0, length(rn)), rn)
+
+    contrast_vec["condition_group_c_vs_w"] <- -1
+
+    if (gt != "kn") {
+      interaction <- paste0(
+        "genotype", gt, ".condition_groupc"
+      )
+
+      contrast_vec[interaction] <- -1
+    }
+
+    res <- DESeq2::results(
+      dds,
+      contrast = contrast_vec
+    )
+
+    within_results[[paste(gt, seg, sep = "_")]] <- res
+
+    # Store WT wound-response genes
+    if (gt == "kn") {
+
+      wt_wound_genes[[seg]] <- rownames(as.data.frame(res))[
+        !is.na(res$padj) &
+          res$padj < 0.05 &
+          abs(res$log2FoldChange) > 1
+      ]
+    }
+  }
+
+  # Mutant vs WT among wounded samples
+  for (gt in c("lox", "haci")) {
+
+    genotype_coef <- paste0("genotype_", gt, "_vs_kn")
+
+    res <- DESeq2::results(
+      dds,
+      name = genotype_coef
+    )
+
+    mutant_results[[paste(gt, seg, sep = "_")]] <- res
+  }
+}
+
+
+# -----------------------------------------
+# 2. Calculate shared x-axis limits
+# -----------------------------------------
+
+# Within-genotype comparisons: all 9 plots
+within_max <- max(
+  abs(unlist(lapply(within_results, function(res) {
+    res$log2FoldChange
+  }))),
+  na.rm = TRUE
+)
+
+within_limit <- ceiling(max(within_max, 1.2))
+
+within_xlim <- c(-within_limit, within_limit)
+
+
+# Mutant vs WT comparisons: all 6 plots
+mutant_max <- max(
+  abs(unlist(lapply(names(mutant_results), function(nm) {
+
+    res <- mutant_results[[nm]]
+
+    gt_seg <- strsplit(nm, "_")[[1]]
+    gt <- gt_seg[1]
+    seg <- gt_seg[2]
+
+    # Apply the same WT gene restriction used in the plots
+    res <- res[rownames(res) %in% wt_wound_genes[[seg]], ]
+
+    res$log2FoldChange
+  }))),
+  na.rm = TRUE
+)
+
+mutant_limit <- ceiling(max(mutant_max, 1.2))
+
+mutant_xlim <- c(-mutant_limit, mutant_limit)
+
+
+# -----------------------------------------
+# 3. Generate all 9 within-genotype plots
+# -----------------------------------------
+
+for (seg in c("S1", "S2", "S3")) {
+
+  for (gt in c("kn", "lox", "haci")) {
+
+    res <- within_results[[paste(gt, seg, sep = "_")]]
+
+    plot_volcano(
+      res,
+      paste(gt, "|", seg, "| Wounded vs control"),
+      file.path(
+        "GO_plots",
+        paste0(gt, "_", seg, "_w_vs_c.svg")
+      ),
+      x_limits = within_xlim
+    )
+  }
+}
+
+
+# -----------------------------------------
+# 4. Generate all 6 mutant vs WT plots
+# -----------------------------------------
+
+for (seg in c("S1", "S2", "S3")) {
+
+  for (gt in c("lox", "haci")) {
+
+    res <- mutant_results[[paste(gt, seg, sep = "_")]]
+
+    plot_volcano(
+      res,
+      paste(gt, "wounded vs kn wounded |", seg),
+      file.path(
+        "GO_plots",
+        paste0(gt, "_vs_kn_wounded_", seg, ".svg")
+      ),
+      genes = wt_wound_genes[[seg]],
+      x_limits = mutant_xlim
+    )
+  }
+}
+
+
+```
+
+
+### 4.1.3. Venn Diagram
+
+### 4.1.4. Heatmap
+
+```{r}
+# Extract genotype-specific results from existing dds_list
+
+results_list <- list()
+
+for (seg in c("S1", "S2", "S3")) {
+
+  dds <- dds_list[[seg]]
+  rn <- DESeq2::resultsNames(dds)
+
+  for (gt in c("kn", "lox", "haci")) {
+
+    # Wounded vs control contrast
+    contrast_vec <- setNames(rep(0, length(rn)), rn)
+
+    contrast_vec["condition_group_c_vs_w"] <- -1
+
+    if (gt != "kn") {
+      interaction <- paste0(
+        "genotype", gt, ".condition_groupc"
+      )
+
+      contrast_vec[interaction] <- -1
+    }
+
+    res <- DESeq2::results(
+      dds,
+      contrast = contrast_vec
+    )
+
+    results_list[[paste(gt, seg, sep = "_")]] <- res
+  }
+}
+```
+
+
+
+```{r}
+# # create matrix for heatmap
+# 
+# for (name in c(
+#   "kn_S1" , "kn_S2", "kn_S3",
+#   "lox_S1", "lox_S2", "lox_S3",
+#   "haci_S1", "haci_S2", "haci_S3"
+# )) {
+# 
+#   # DESeq2 results
+#   res <- as.data.frame(results_list[[name]])
+# 
+#  # Identify segment
+# seg <- strsplit(name, "_")[[1]][2]
+# 
+# # Identify genotype and segment
+# parts <- strsplit(name, "_")[[1]]
+# gt <- parts[1]
+# seg <- parts[2]
+# 
+# # Get existing segment-level DESeq2 object
+# dds <- dds_list[[seg]]
+# 
+# # VST transformation
+# vst_data <- varianceStabilizingTransformation(
+#   dds,
+#   blind = FALSE
+# )
+# 
+# vst_matrix <- assay(vst_data)
+# 
+# # Select only samples belonging to this genotype
+# samples <- colData(dds)$genotype == gt
+# 
+# vst_matrix <- vst_matrix[, samples, drop = FALSE]
+# 
+# # Scale each gene across samples of this genotype only
+# heatmap_matrix <- t(scale(t(vst_matrix)))
+# 
+# # Get condition labels
+# condition <- droplevels(colData(dds)$condition_group[samples])
+#   # average replicates
+#   heatmap_avg <- sapply(
+#     levels(condition),
+#     function(x) {
+#       rowMeans(heatmap_matrix[, condition == x, drop = FALSE])
+#     }
+#   )
+# 
+# 
+# # Reorder rows according to dat_phytohormone_goi order
+# row_order <- match(
+#   dat_goi_combined$Gene_ID,
+#   rownames(heatmap_avg)
+# )
+# 
+# row_order <- row_order[!is.na(row_order)]
+# 
+# heatmap_avg <- heatmap_avg[row_order, , drop = FALSE]
+# 
+# # Create star matrix AFTER reordering
+# star_matrix <- matrix(
+#   "",
+#   nrow = nrow(heatmap_avg),
+#   ncol = 1,
+#   dimnames = list(
+#     rownames(heatmap_avg),
+#     name
+#   )
+# )
+# 
+# res <- results_list[[name]]
+# 
+# common <- intersect(rownames(res), rownames(star_matrix))
+# 
+# padj <- res[common, "padj"]
+# 
+# star_matrix[common[!is.na(padj) & padj < 0.001], name] <- "***"
+# star_matrix[common[!is.na(padj) & padj < 0.01 & padj >= 0.001], name] <- "**"
+# star_matrix[common[!is.na(padj) & padj < 0.05 & padj >= 0.01], name] <- "*"
+# 
+# # Replace row names with gene names
+# 
+# heatmap_avg <- heatmap_avg[, c("c", "w"), drop = FALSE]
+# 
+# gene_names <- dat_goi_combined$gene_name[
+#   match(rownames(heatmap_avg), dat_goi_combined$Gene_ID)
+# ]
+# 
+# rownames(heatmap_avg) <- gene_names
+# 
+# # Rename columns
+# colnames(heatmap_avg) <- c("Control", "MW")
+# 
+# # Create full star matrix matching heatmap dimensions
+# stars <- matrix(
+#   "",
+#   nrow = nrow(heatmap_avg),
+#   ncol = ncol(heatmap_avg),
+#   dimnames = dimnames(heatmap_avg)
+# )
+# 
+# stars[, "MW"] <- star_matrix[, name]
+# 
+# 
+# 
+#   ## save heatmap
+#   
+#   # pdf(paste0(name, "_hm2.pdf"), width = 5, height = 12)
+# 
+#   pheatmap(
+#     heatmap_avg,
+#     display_numbers = stars,
+#     cluster_cols = FALSE,
+#     cluster_rows = FALSE,
+#     show_rownames = TRUE,
+#     fontsize_col = 12,
+#     fontsize_row = 10,
+#     cellwidth = 10,
+#     cellheight = 10,
+#     main = name
+#   )
+# 
+#   # dev.off()
+# }
+```
+
+
+one heatmap: 
+```{r}
+
+# Create common gene list
+genes_common <- unique(dat_goi_combined$Gene_ID)
+
+# Define order
+genotypes <- c("kn", "haci", "lox")
+segments <- c("S1", "S2", "S3")
+
+# Transform each segment only once
+vst_list <- list()
+
+for (seg in segments) {
+  vst_data <- varianceStabilizingTransformation(
+    dds_list[[seg]],
+    blind = FALSE
+  )
+  vst_list[[seg]] <- assay(vst_data)
+}
+
+# Initialise combined matrices
+heatmap_combined <- NULL
+stars_combined <- NULL
+
+# Loop through all genotype and segment combinations
+for (seg in segments) {
+  for (gt in genotypes) {
+
+    name <- paste(gt, seg, sep = "_")
+
+    # Get DESeq2 object and VST matrix
+    dds <- dds_list[[seg]]
+    vst_matrix <- vst_list[[seg]]
+
+    # Select samples belonging to this genotype
+    samples <- colData(dds)$genotype == gt
+
+    vst_gt <- vst_matrix[, samples, drop = FALSE]
+
+    # Scale each gene across samples of this genotype
+    heatmap_matrix <- t(scale(t(vst_gt)))
+
+    # Get condition labels
+    condition <- as.character(
+      colData(dds)$condition_group[samples]
+    )
+
+    # Average replicates for Control and MW
+    heatmap_avg <- sapply(
+      c("c", "w"),
+      function(x) {
+        rowMeans(
+          heatmap_matrix[, condition == x, drop = FALSE],
+          na.rm = TRUE
+        )
+      }
+    )
+
+    colnames(heatmap_avg) <- paste(
+      gt, seg, c("Control", "MW"), sep = "_"
+    )
+
+    # Keep only genes in the combined GOI list
+    # Missing genes are added later as NA
+    heatmap_avg <- heatmap_avg[
+      intersect(genes_common, rownames(heatmap_avg)),
+      ,
+      drop = FALSE
+    ]
+
+    # Reorder to common gene list
+    heatmap_avg <- heatmap_avg[
+      match(
+        genes_common[genes_common %in% rownames(heatmap_avg)],
+        rownames(heatmap_avg)
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    # Create star matrix
+    stars <- matrix(
+      "",
+      nrow = length(genes_common),
+      ncol = 2,
+      dimnames = list(
+        genes_common,
+        colnames(heatmap_avg)
+      )
+    )
+
+    # Add significance stars for MW
+    res <- results_list[[name]]
+    common <- intersect(genes_common, rownames(res))
+
+    padj <- res[common, "padj"]
+
+    stars[common[!is.na(padj) & padj < 0.001], 2] <- "***"
+    stars[common[!is.na(padj) & padj >= 0.001 & padj < 0.01], 2] <- "**"
+    stars[common[!is.na(padj) & padj >= 0.01 & padj < 0.05], 2] <- "*"
+
+    # Expand heatmap matrix to include all genes
+    full_matrix <- matrix(
+      NA_real_,
+      nrow = length(genes_common),
+      ncol = 2,
+      dimnames = list(
+        genes_common,
+        colnames(heatmap_avg)
+      )
+    )
+
+    full_matrix[rownames(heatmap_avg), ] <- heatmap_avg
+
+    # Combine all genotype/segment combinations
+    if (is.null(heatmap_combined)) {
+      heatmap_combined <- full_matrix
+      stars_combined <- stars
+    } else {
+      heatmap_combined <- cbind(heatmap_combined, full_matrix)
+      stars_combined <- cbind(stars_combined, stars)
+    }
+  }
+}
+
+# Add gene names
+gene_names <- dat_goi_combined$gene_name[
+  match(rownames(heatmap_combined), dat_goi_combined$Gene_ID)
+]
+
+# Make duplicate gene names unique
+gene_names <- make.unique(gene_names)
+
+rownames(heatmap_combined) <- gene_names
+rownames(stars_combined) <- gene_names
+
+# Check dimensions and column order
+dim(heatmap_combined)
+colnames(heatmap_combined)
+
+```
+
+```{r}
+# plot
+
+pdf("202611_heatmap_new.pdf", width = 5, height = 16)
+
+pheatmap(
+  heatmap_combined,
+  display_numbers = stars_combined,
+  cluster_cols = FALSE,
+  cluster_rows = FALSE,
+  show_rownames = TRUE,
+  fontsize_col = 10,
+  fontsize_row = 8,
+  cellwidth = 10,
+  cellheight = 10,
+  angle_col = 45,
+  na_col = "grey90",
+  border_color = "grey10",
+  gaps_col = c(2, 4, 6, 8, 10, 12, 14, 16),
+  main = "Gene of interest expression"
+)
+
+dev.off()
+
+```
+## 4.4. Barplots log-fold change
+
+### 4.4.1. Subset of genes
+
+I DON'T THINK I NEED THIS PART
+
+<!-- ```{r} -->
+
+<!-- # --------------------------------------------------------- -->
+<!-- # Prepare metadata -->
+<!-- # --------------------------------------------------------- -->
+
+<!-- rownames(dat_meta) <- dat_meta$sample_description -->
+
+<!-- # Make sure count matrix follows metadata order -->
+<!-- dat_raw_counts <- dat_raw_counts[, rownames(dat_meta)] -->
+
+<!-- # Factors -->
+<!-- dat_meta$genotype <- factor( -->
+<!--   dat_meta$genotype, -->
+<!--   levels = c("kn", "lox", "haci") -->
+<!-- ) -->
+
+<!-- dat_meta$condition_group <- factor( -->
+<!--   dat_meta$condition_group, -->
+<!--   levels = c("w", "c") -->
+<!-- ) -->
+
+<!-- dat_meta$segment <- factor( -->
+<!--   dat_meta$segment, -->
+<!--   levels = c("S1", "S2", "S3") -->
+<!-- ) -->
+
+
+
+<!-- # --------------------------------------------------------- -->
+<!-- # Function -->
+<!-- # --------------------------------------------------------- -->
+
+<!-- make_segment_plot <- function(segment_name, -->
+<!--                               dds_list, -->
+<!--                               goi, -->
+<!--                               padj_cutoff = 0.05) { -->
+
+<!--  # ------------------------------------------------------- -->
+<!--   # 1. Get existing fitted DESeq2 object -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   dds <- dds_list[[segment_name]] -->
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 2. Interaction tests -->
+<!--   # -->
+<!--   # Does the C-vs-W response differ between: -->
+<!--   #   WT vs lox -->
+<!--   #   WT vs haci -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   res_lox_interaction <- results( -->
+<!--     dds, -->
+<!--     name = "genotypelox.condition_groupc" -->
+<!--   ) -->
+
+<!--   res_haci_interaction <- results( -->
+<!--     dds, -->
+<!--     name = "genotypehaci.condition_groupc" -->
+<!--   ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 3. Significant interaction genes -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   sig_lox <- rownames(res_lox_interaction)[ -->
+<!--     !is.na(res_lox_interaction$padj) & -->
+<!--       res_lox_interaction$padj < padj_cutoff -->
+<!--   ] -->
+
+<!--   sig_haci <- rownames(res_haci_interaction)[ -->
+<!--     !is.na(res_haci_interaction$padj) & -->
+<!--       res_haci_interaction$padj < padj_cutoff -->
+<!--   ] -->
+
+
+<!--   # Significant in WT-vs-lox OR WT-vs-haci -->
+<!--   sig_genes <- union( -->
+<!--     sig_lox, -->
+<!--     sig_haci -->
+<!--   ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 4. Restrict to genes of interest -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   sig_genes <- intersect( -->
+<!--     sig_genes, -->
+<!--     goi$Gene_ID -->
+<!--   ) -->
+
+
+<!-- # ------------------------------------------------------- -->
+<!-- # 5. Get C vs W effects -->
+<!-- # ------------------------------------------------------- -->
+
+<!-- res_WT <- results( -->
+<!--   dds, -->
+<!--   contrast = c( -->
+<!--     "condition_group", -->
+<!--     "c", -->
+<!--     "w" -->
+<!--   ) -->
+<!-- ) -->
+
+<!-- res_lox <- results( -->
+<!--   dds, -->
+<!--   contrast = list( -->
+<!--     c( -->
+<!--       "condition_group_c_vs_w", -->
+<!--       "genotypelox.condition_groupc" -->
+<!--     ) -->
+<!--   ) -->
+<!-- ) -->
+
+<!-- res_haci <- results( -->
+<!--   dds, -->
+<!--   contrast = list( -->
+<!--     c( -->
+<!--       "condition_group_c_vs_w", -->
+<!--       "genotypehaci.condition_groupc" -->
+<!--     ) -->
+<!--   ) -->
+<!-- ) -->
+
+
+<!-- # ------------------------------------------------------- -->
+<!-- # 6. Convert C vs W → W vs C -->
+<!-- # ------------------------------------------------------- -->
+
+<!-- res_WT$log2FoldChange <- -res_WT$log2FoldChange -->
+<!-- res_lox$log2FoldChange <- -res_lox$log2FoldChange -->
+<!-- res_haci$log2FoldChange <- -res_haci$log2FoldChange -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 7. Create plotting dataframe -->
+<!--   # -->
+<!--   # Keep both log2FC and lfcSE -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   plot_data <- bind_rows( -->
+
+<!--     data.frame( -->
+<!--       Gene_ID = sig_genes, -->
+<!--       genotype = "WT", -->
+<!--       log2FC = res_WT[sig_genes, "log2FoldChange"], -->
+<!--       lfcSE = res_WT[sig_genes, "lfcSE"] -->
+<!--     ), -->
+
+<!--     data.frame( -->
+<!--       Gene_ID = sig_genes, -->
+<!--       genotype = "lox", -->
+<!--       log2FC = res_lox[sig_genes, "log2FoldChange"], -->
+<!--       lfcSE = res_lox[sig_genes, "lfcSE"] -->
+<!--     ), -->
+
+<!--     data.frame( -->
+<!--       Gene_ID = sig_genes, -->
+<!--       genotype = "haci", -->
+<!--       log2FC = res_haci[sig_genes, "log2FoldChange"], -->
+<!--       lfcSE = res_haci[sig_genes, "lfcSE"] -->
+<!--     ) -->
+<!--   ) -->
+
+<!--   # -------------------------------------------------------  -->
+<!--   # 8. Add interaction p-values to plotting data -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   plot_data <- plot_data %>% -->
+<!--   mutate( -->
+<!--     padj_lox_vs_WT = res_lox_interaction[Gene_ID, "padj"], -->
+<!--     padj_haci_vs_WT = res_haci_interaction[Gene_ID, "padj"] -->
+<!--   ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 9. Create a significance label: -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   plot_data <- plot_data %>% -->
+<!--   mutate( -->
+<!--     significance = case_when( -->
+<!--       genotype == "lox" & padj_lox_vs_WT < 0.001  ~ "***", -->
+<!--       genotype == "lox" & padj_lox_vs_WT < 0.01   ~ "**", -->
+<!--       genotype == "lox" & padj_lox_vs_WT < 0.05   ~ "*", -->
+
+<!--       genotype == "haci" & padj_haci_vs_WT < 0.001  ~ "***", -->
+<!--       genotype == "haci" & padj_haci_vs_WT < 0.01   ~ "**", -->
+<!--       genotype == "haci" & padj_haci_vs_WT < 0.05   ~ "*", -->
+
+<!--       TRUE ~ "" -->
+<!--     ) -->
+<!--   ) -->
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 10. Calculate vjust in data: -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   plot_data <- plot_data %>% -->
+<!--   mutate( -->
+<!--     star_y = ifelse( -->
+<!--       log2FC >= 0, -->
+<!--       log2FC + 1.96 * lfcSE, -->
+<!--       log2FC - 1.96 * lfcSE -->
+<!--     ), -->
+<!--     star_vjust = ifelse( -->
+<!--       log2FC >= 0, -->
+<!--       -0.3, -->
+<!--       1.3 -->
+<!--     ) -->
+<!--   ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 11. Add gene names -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   plot_data <- plot_data %>% -->
+<!--     left_join( -->
+<!--       goi %>% -->
+<!--         dplyr::select(Gene_ID, gene_name), -->
+<!--       by = "Gene_ID" -->
+<!--     ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 12. Plot -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   p <- ggplot( -->
+<!--     plot_data, -->
+<!--     aes( -->
+<!--       x = gene_name, -->
+<!--       y = log2FC, -->
+<!--       fill = genotype -->
+<!--     ) -->
+<!--   ) + -->
+
+<!--     geom_col( -->
+<!--       position = position_dodge(width = 0.8) -->
+<!--     ) + -->
+
+<!--     geom_errorbar( -->
+<!--       aes( -->
+<!--         ymin = log2FC - 1.96 * lfcSE, -->
+<!--         ymax = log2FC + 1.96 * lfcSE -->
+<!--       ), -->
+<!--       position = position_dodge(width = 0.8), -->
+<!--       width = 0.25 -->
+<!--     ) + -->
+
+<!--     geom_text( -->
+<!--       aes( -->
+<!--         label = significance, -->
+<!--         y = star_y, -->
+<!--         vjust = star_vjust -->
+<!--       ), -->
+<!--       position = position_dodge(width = 0.8), -->
+<!--       size = 4 -->
+<!--     ) + -->
+
+<!--     geom_hline( -->
+<!--       yintercept = 0, -->
+<!--       linewidth = 0.5 -->
+<!--     ) + -->
+
+<!--     theme_classic() + -->
+
+<!--     labs( -->
+<!--       title = segment_name, -->
+<!--       x = NULL, -->
+<!--       y = "log2 fold change (C vs W)", -->
+<!--       fill = "Genotype" -->
+<!--     ) + -->
+
+<!--     theme( -->
+<!--       axis.text.x = element_text( -->
+<!--         angle = 90, -->
+<!--         hjust = 1, -->
+<!--         vjust = 0.5 -->
+<!--       ) -->
+<!--     ) -->
+
+
+<!--   # ------------------------------------------------------- -->
+<!--   # 13. Return everything -->
+<!--   # ------------------------------------------------------- -->
+
+<!--   return( -->
+<!--     list( -->
+<!--       dds = dds, -->
+<!--       significant_genes = sig_genes, -->
+<!--       interaction_lox = res_lox_interaction, -->
+<!--       interaction_haci = res_haci_interaction, -->
+<!--       plot_data = plot_data, -->
+<!--       plot = p -->
+<!--     ) -->
+<!--   ) -->
+<!-- } -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- # directly change input here -->
+
+<!-- S1 <- make_segment_plot( -->
+<!--   segment_name = "S1", -->
+<!--   dds_list = dds_list, -->
+<!--   goi = dat_goi_combined -->
+<!-- ) -->
+
+<!-- S2 <- make_segment_plot( -->
+<!--   segment_name = "S2", -->
+<!--   dds_list = dds_list, -->
+<!--   goi = dat_goi_combined -->
+<!-- ) -->
+
+<!-- S3 <- make_segment_plot( -->
+<!--   segment_name = "S3", -->
+<!--   dds_list = dds_list, -->
+<!--   goi = dat_goi_combined -->
+<!-- ) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- S1 -->
+<!-- S2 -->
+<!-- S3 -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- # save plots: -->
+
+<!-- pdf( -->
+<!--   "S3_barplot1.pdf", -->
+<!--   width = 16, -->
+<!--   height = 5 -->
+<!-- ) -->
+
+<!-- print(fig_S3) -->
+
+<!-- dev.off() -->
+<!-- ``` -->
+
+Make plots with all the genes that are significant for both mutants in either segment for all segments:
+
+```{r}
+# list of genes:
+
+genes <- c("AOS1c", "AOS2a", "BX2", "BX3", "BX5", "BX6", "BX11", "TPS2", "TPS3", "LOX4", "LOX5")  # MAKE THIS REPRODUCIBLE, SO ADD CODE THAT FINDS THESE GENES.
+
+dat_goi1 <- subset(dat_goi, gene_name %in% genes)
+
+dat_ph1 <- subset(dat_phytohormone_goi, gene_name %in% genes)
+dat_ph2 <- dat_ph1[,c(6, 2, 1)]
+
+colnames(dat_ph2)[1] <- "Gene_ID"
+
+dat_genes_goi <- rbind(dat_goi1, dat_ph2)
+
+```
+
+This is from the function below - it's a tiny bit different this function
+```{r}
+# directly change input here
+
+S1 <- make_segment_plot(
+  segment_name = "S1",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+
+S2 <- make_segment_plot(
+  segment_name = "S2",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+
+S3 <- make_segment_plot(
+  segment_name = "S3",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_genes_goi
+)
+```
+
+```{r}
+fig_S1_1 <- S1$plot
+fig_S2_1 <- S2$plot
+fig_S3_1 <- S3$plot
+
+fig_S1_1
+fig_S2_1
+fig_S3_1
+```
+
+```{r}
+# save plots:
+
+pdf(
+  "S2_barplot3.pdf",
+  width = 16,
+  height = 5
+)
+
+print(fig_S2_1)
+
+dev.off()
+```
+
+```{r}
+
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+# Make sure count matrix follows metadata order
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta)]
+
+# Factors
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+
+
+
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+make_segment_plot <- function(segment_name,
+                              dds_list,
+                              goi,
+                              padj_cutoff = 0.05) {
+  
+   # -------------------------------------------------------
+  # 1. Get existing fitted DESeq2 object
+  # -------------------------------------------------------
+
+  dds <- dds_list[[segment_name]]
+  
+  # -------------------------------------------------------
+  # 5. Interaction tests
+  #
+  # Does the C-vs-W response differ between:
+  #   WT vs lox
+  #   WT vs haci
+  # -------------------------------------------------------
+  
+  res_lox_interaction <- results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  res_haci_interaction <- results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  
+  # -------------------------------------------------------
+  # 6. Significant interaction genes
+  # -------------------------------------------------------
+  # 
+  # sig_lox <- rownames(res_lox_interaction)[
+  #   !is.na(res_lox_interaction$padj) &
+  #     res_lox_interaction$padj < padj_cutoff
+  # ]
+  # 
+  # sig_haci <- rownames(res_haci_interaction)[
+  #   !is.na(res_haci_interaction$padj) &
+  #     res_haci_interaction$padj < padj_cutoff
+  # ]
+  
+  
+  # Significant in WT-vs-lox OR WT-vs-haci
+  # sig_genes <- union(
+  #   sig_lox,
+  #   sig_haci
+  # )
+  
+  
+  # -------------------------------------------------------
+  # 7. Restrict to genes of interest
+  # -------------------------------------------------------
+  
+  # sig_genes <- intersect(
+  #   sig_genes,
+  #   goi$Gene_ID
+  # )
+ 
+  # Just use the predefined genes instead:
+  sig_genes <- goi$Gene_ID 
+  
+# -------------------------------------------------------
+# 8. Get C vs W effects
+# -------------------------------------------------------
+
+res_WT <- results(
+  dds,
+  contrast = c(
+    "condition_group",
+    "c",
+    "w"
+  )
+)
+
+res_lox <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypelox.condition_groupc"
+    )
+  )
+)
+
+res_haci <- results(
+  dds,
+  contrast = list(
+    c(
+      "condition_group_c_vs_w",
+      "genotypehaci.condition_groupc"
+    )
+  )
+)
+
+
+# -------------------------------------------------------
+# 9. Convert C vs W → W vs C
+# -------------------------------------------------------
+
+res_WT$log2FoldChange <- -res_WT$log2FoldChange
+res_lox$log2FoldChange <- -res_lox$log2FoldChange
+res_haci$log2FoldChange <- -res_haci$log2FoldChange
+  
+  
+  # -------------------------------------------------------
+  # 11. Create plotting dataframe
+  #
+  # Keep both log2FC and lfcSE
+  # -------------------------------------------------------
+  
+  plot_data <- bind_rows(
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "WT",
+      log2FC = res_WT[sig_genes, "log2FoldChange"],
+      lfcSE = res_WT[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "lox",
+      log2FC = res_lox[sig_genes, "log2FoldChange"],
+      lfcSE = res_lox[sig_genes, "lfcSE"]
+    ),
+    
+    data.frame(
+      Gene_ID = sig_genes,
+      genotype = "haci",
+      log2FC = res_haci[sig_genes, "log2FoldChange"],
+      lfcSE = res_haci[sig_genes, "lfcSE"]
+    )
+  )
+  
+  # ------------------------------------------------------- 
+  # 12. Add interaction p-values to plotting data
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    padj_lox_vs_WT = res_lox_interaction[Gene_ID, "padj"],
+    padj_haci_vs_WT = res_haci_interaction[Gene_ID, "padj"]
+  )
+  
+  
+  # -------------------------------------------------------
+  # 13. Create a significance label:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    significance = case_when(
+      genotype == "lox" & padj_lox_vs_WT < 0.001  ~ "***",
+      genotype == "lox" & padj_lox_vs_WT < 0.01   ~ "**",
+      genotype == "lox" & padj_lox_vs_WT < 0.05   ~ "*",
+      
+      genotype == "haci" & padj_haci_vs_WT < 0.001  ~ "***",
+      genotype == "haci" & padj_haci_vs_WT < 0.01   ~ "**",
+      genotype == "haci" & padj_haci_vs_WT < 0.05   ~ "*",
+      
+      TRUE ~ ""
+    )
+  )
+  
+  # -------------------------------------------------------
+  # 14. Calculate vjust in data:
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+  mutate(
+    star_y = ifelse(
+      log2FC >= 0,
+      log2FC + 1.96 * lfcSE,
+      log2FC - 1.96 * lfcSE
+    ),
+    star_vjust = ifelse(
+      log2FC >= 0,
+      -0.3,
+      1.3
+    )
+  )
+  
+  
+  # -------------------------------------------------------
+  # 15. Add gene names
+  # -------------------------------------------------------
+  
+  plot_data <- plot_data %>%
+    left_join(
+      goi %>%
+        dplyr::select(Gene_ID, gene_name),
+      by = "Gene_ID"
+    )
+  
+  
+  # -------------------------------------------------------
+  # 16. Plot
+  # -------------------------------------------------------
+  
+  p <- ggplot(
+    plot_data,
+    aes(
+      x = gene_name,
+      y = log2FC,
+      fill = genotype
+    )
+  ) +
+    
+    geom_col(
+      position = position_dodge(width = 0.8)
+    ) +
+    
+    geom_errorbar(
+      aes(
+        ymin = log2FC - 1.96 * lfcSE,
+        ymax = log2FC + 1.96 * lfcSE
+      ),
+      position = position_dodge(width = 0.8),
+      width = 0.25
+    ) +
+    
+    geom_text(
+      aes(
+        label = significance,
+        y = star_y,
+        vjust = star_vjust
+      ),
+      position = position_dodge(width = 0.8),
+      size = 4
+    ) +
+    
+    geom_hline(
+      yintercept = 0,
+      linewidth = 0.5
+    ) +
+    
+    theme_classic() +
+    
+    labs(
+      title = segment_name,
+      x = NULL,
+      y = "log2 fold change (C vs W)",
+      fill = "Genotype"
+    ) +
+    
+    theme(
+      axis.text.x = element_text(
+        angle = 90,
+        hjust = 1,
+        vjust = 0.5
+      )
+    )
+  
+  
+  # -------------------------------------------------------
+  # 17. Return everything
+  # -------------------------------------------------------
+  
+  return(
+    list(
+      dds = dds,
+      significant_genes = sig_genes,
+      interaction_lox = res_lox_interaction,
+      interaction_haci = res_haci_interaction,
+      plot_data = plot_data,
+      plot = p
+    )
+  )
+}
+```
+
+
+# 5. Functional interpretation
+
+Make lists of genes for GO-Term analyses
+
+```{r}
+# library(dplyr)
+# library(tibble)
+
+
+# ---------------------------------------------------------
+# Prepare metadata
+# ---------------------------------------------------------
+
+rownames(dat_meta) <- dat_meta$sample_description
+
+dat_raw_counts <- dat_raw_counts[, rownames(dat_meta), drop = FALSE]
+
+dat_meta$genotype <- factor(
+  dat_meta$genotype,
+  levels = c("kn", "lox", "haci")
+)
+
+dat_meta$condition_group <- factor(
+  dat_meta$condition_group,
+  levels = c("w", "c")
+)
+
+dat_meta$segment <- factor(
+  dat_meta$segment,
+  levels = c("S1", "S2", "S3")
+)
+
+
+# ---------------------------------------------------------
+# Function
+# ---------------------------------------------------------
+
+run_segment_interaction <- function(
+    segment_name,
+    counts,
+    metadata,
+    padj_cutoff = 0.05
+) {
+  
+  # Subset metadata
+  meta_seg <- metadata[
+    as.character(metadata$segment) == segment_name,
+    ,
+    drop = FALSE
+  ]
+  
+  # Keep only samples present in counts
+  meta_seg <- meta_seg[
+    rownames(meta_seg) %in% colnames(counts),
+    ,
+    drop = FALSE
+  ]
+  
+  # Subset counts
+  counts_seg <- counts[, rownames(meta_seg), drop = FALSE]
+  
+  # Ensure identical sample order
+  counts_seg <- counts_seg[, rownames(meta_seg), drop = FALSE]
+  
+  # Drop unused factor levels
+  meta_seg$genotype <- droplevels(meta_seg$genotype)
+  meta_seg$condition_group <- droplevels(meta_seg$condition_group)
+  
+  # -------------------------------------------------------
+  # DESeq2 object
+  # -------------------------------------------------------
+  
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts_seg)),
+    colData = meta_seg,
+    design = ~ genotype + condition_group +
+      genotype:condition_group
+  )
+  
+  # -------------------------------------------------------
+  # Filter low-count genes
+  # -------------------------------------------------------
+  
+  keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
+  
+  dds <- dds[keep, ]
+  
+  # -------------------------------------------------------
+  # Run DESeq2
+  # -------------------------------------------------------
+  
+  dds <- DESeq2::DESeq(dds)
+  
+  # -------------------------------------------------------
+  # lox10 vs WT interaction
+  # -------------------------------------------------------
+  
+  res_lox <- DESeq2::results(
+    dds,
+    name = "genotypelox.condition_groupc"
+  )
+  
+  # -------------------------------------------------------
+  # haci vs WT interaction
+  # -------------------------------------------------------
+  
+  res_haci <- DESeq2::results(
+    dds,
+    name = "genotypehaci.condition_groupc"
+  )
+  
+  # -------------------------------------------------------
+  # Convert to data frames
+  # -------------------------------------------------------
+  
+  res_lox_df <- as.data.frame(res_lox)
+  res_lox_df$Gene_ID <- rownames(res_lox_df)
+  rownames(res_lox_df) <- NULL
+  
+  res_lox_df$segment <- segment_name
+  res_lox_df$comparison <- "lox10_vs_WT"
+  
+  res_haci_df <- as.data.frame(res_haci)
+  res_haci_df$Gene_ID <- rownames(res_haci_df)
+  rownames(res_haci_df) <- NULL
+  
+  res_haci_df$segment <- segment_name
+  res_haci_df$comparison <- "haci_vs_WT"
+  
+  # -------------------------------------------------------
+  # Significant genes
+  # -------------------------------------------------------
+  
+  sig_lox <- res_lox_df[
+    !is.na(res_lox_df$padj) &
+      res_lox_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  sig_haci <- res_haci_df[
+    !is.na(res_haci_df$padj) &
+      res_haci_df$padj < padj_cutoff,
+    ,
+    drop = FALSE
+  ]
+  
+  # -------------------------------------------------------
+  # Positive interaction
+  # -------------------------------------------------------
+  
+  lox10_positive <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange > 0
+  ]
+  
+  haci_positive <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange > 0
+  ]
+  
+  # -------------------------------------------------------
+  # Negative interaction
+  # -------------------------------------------------------
+  
+  lox10_negative <- sig_lox$Gene_ID[
+    sig_lox$log2FoldChange < 0
+  ]
+  
+  haci_negative <- sig_haci$Gene_ID[
+    sig_haci$log2FoldChange < 0
+  ]
+  
+  # -------------------------------------------------------
+  # Either mutant
+  # -------------------------------------------------------
+  
+  both_mutant <- intersect(
+    sig_lox$Gene_ID,
+    sig_haci$Gene_ID
+  )
+  
+  both_mutant_positive <- intersect(
+    lox10_positive,
+    haci_positive
+  )
+  
+  both_mutant_negative <- intersect(
+    lox10_negative,
+    haci_negative
+  )
+  
+  # -------------------------------------------------------
+  # Return
+  # -------------------------------------------------------
+  
+  list(
+    dds = dds,
+    
+    lox10_vs_WT = res_lox_df,
+    haci_vs_WT = res_haci_df,
+    
+    significant_lox10_vs_WT = sig_lox,
+    significant_haci_vs_WT = sig_haci,
+    
+    lox10_positive = lox10_positive,
+    lox10_negative = lox10_negative,
+    
+    haci_positive = haci_positive,
+    haci_negative = haci_negative,
+    
+    both_mutant = both_mutant,
+    both_mutant_positive = both_mutant_positive,
+    both_mutant_negative = both_mutant_negative
+  )
+}
+
+
+# ---------------------------------------------------------
+# Run all segments
+# ---------------------------------------------------------
+
+segments <- unique(as.character(dat_meta$segment))
+
+DE_results <- lapply(
+  segments,
+  function(seg) {
+    
+    message("Running segment: ", seg)
+    
+    run_segment_interaction(
+      segment_name = seg,
+      counts = dat_raw_counts,
+      metadata = dat_meta,
+      padj_cutoff = 0.05
+    )
+  }
+)
+
+names(DE_results) <- segments
+
+
+# ---------------------------------------------------------
+# Gene vectors for topGO
+# ---------------------------------------------------------
+
+topGO_genes <- lapply(
+  DE_results,
+  function(x) {
+    
+    list(
+      lox10_positive = x$lox10_positive,
+      lox10_negative = x$lox10_negative,
+      
+      haci_positive = x$haci_positive,
+      haci_negative = x$haci_negative,
+      
+      both_mutant = x$both_mutant,
+      both_mutant_positive = x$both_mutant_positive,
+      both_mutant_negative = x$both_mutant_negative
+    )
+  }
+)
+
+
+# ---------------------------------------------------------
+# Individual vectors
+# ---------------------------------------------------------
+
+S1_lox10_positive <- topGO_genes$S1$lox10_positive
+S1_lox10_negative <- topGO_genes$S1$lox10_negative
+S1_haci_positive <- topGO_genes$S1$haci_positive
+S1_haci_negative <- topGO_genes$S1$haci_negative
+
+S2_lox10_positive <- topGO_genes$S2$lox10_positive
+S2_lox10_negative <- topGO_genes$S2$lox10_negative
+S2_haci_positive <- topGO_genes$S2$haci_positive
+S2_haci_negative <- topGO_genes$S2$haci_negative
+
+S3_lox10_positive <- topGO_genes$S3$lox10_positive
+S3_lox10_negative <- topGO_genes$S3$lox10_negative
+S3_haci_positive <- topGO_genes$S3$haci_positive
+S3_haci_negative <- topGO_genes$S3$haci_negative
+
+
+# ---------------------------------------------------------
+# Check number of genes
+# ---------------------------------------------------------
+
+sapply(
+  topGO_genes,
+  function(x) sapply(x, length)
+)
+```
+
+
+
+
+## 5.1. GO-Term analysis
+
+```{r}
+# format go-term df:
+dat_b73_go1 <- dat_b73_go[(dat_b73_go$ARGOT_PPV > 0.5), ]  # filter to only include genes that have confident ARGOT_score assigned to them
+
+dat_b73_go1$goid <- paste0('GO:', dat_b73_go1$goid)  # Add "GO:" infront of all GO-IDs
+
+dat_b73_go2 <- dat_b73_go1 |>
+  separate(qpid, into = c("qpid", "P_isoform"), sep = "_")
+
+panzer_to_golist <- function(panzer_df){
+  go_df <- aggregate( goid ~ qpid, data=panzer_df, FUN=c)
+  structure(go_df$goid, .Names=go_df$qpid)
+}
+all_golist <- panzer_to_golist(dat_b73_go2)
+```
+
+TopGO needs the full list of genes with a column "myInput" that contains "yes" or "no", yes denotes the genes I would like to run the enrichment analysis on.
+
+1. make a df that is just a list of the genes that are differentially expressed:
+```{r}
+# S1 <- topGO_genes$S1$haci_positive
+# S2 <- topGO_genes$S2$haci_positive
+# S3 <- topGO_genes$S3$haci_positive
+# 
+# dat_s1 <- as.data.frame(S1)
+# dat_s2 <- as.data.frame(S2)
+# dat_s3 <- as.data.frame(S3)
+# 
+# colnames(dat_s1) <- "genenames"
+# colnames(dat_s2) <- "genenames"
+# colnames(dat_s3) <- "genenames"
+# 
+# dat_s1 <- dat_s1 |>
+#   mutate(myInput = "yes")
+# 
+# dat_s2 <- dat_s2 |>
+#   mutate(myInput = "yes")
+# 
+# dat_s3 <- dat_s3 |>
+#   mutate(myInput = "yes")
+
+```
+
+
+```{r}
+
+# # Function that does it for all:
+# make_topGO_gene_vector <- function(selected_genes, background_genes) {
+# 
+#   # Remove genes that aren't in the GO annotation background
+#   selected_genes <- intersect(
+#     selected_genes,
+#     background_genes
+#   )
+# 
+#   # Create yes/no vector
+#   myGenesF <- factor(
+#     as.integer(background_genes %in% selected_genes)
+#   )
+# 
+#   names(myGenesF) <- background_genes
+# 
+#   return(myGenesF)
+# }
+# 
+# myGenesF <- make_topGO_gene_vector(
+#   topGO_genes$S2$haci_positive,
+#   gene_names
+# )
+
+
+
+run_topGO <- function(gene_list, ontology, gene2GO_list) {
+
+  topGO_data <- new(
+    "topGOdata",
+    ontology = ontology,
+    allGenes = gene_list,
+    annot = annFUN.gene2GO,
+    gene2GO = gene2GO_list
+  )
+
+  fishers_result <- runTest(
+    topGO_data,
+    algorithm = "elim",
+    statistic = "fisher"
+  )
+
+  # Return all available GO terms
+  fishers_table <- GenTable(
+    topGO_data,
+    Fishers = fishers_result,
+    useLevels = TRUE,
+    topNodes = length(usedGO(topGO_data))
+  )
+
+  fishers_table$Ontology <- ontology
+
+  # Extract actual, unrounded Fisher p-values
+  all_scores <- score(fishers_result)
+
+  fishers_table$Fishers <- all_scores[
+    match(
+      fishers_table$GO.ID,
+      names(all_scores)
+    )
+  ]
+
+  # Calculate FDR across all returned GO terms
+  fishers_table$FDR <- p.adjust(
+    fishers_table$Fishers,
+    method = "BH"
+  )
+
+  # Keep only GO terms with significant FDR
+  fishers_table <- fishers_table[
+    !is.na(fishers_table$FDR) &
+      fishers_table$FDR < 0.05,
+    ,
+    drop = FALSE
+  ]
+
+  return(fishers_table)
+}
+
+
+```
+
+Run enrichment analysis:
+
+define functions:
+1. topGO analysis that creates a fishers table
+```{r}
+# 
+# run_topGO <- function(gene_list, ontology, gene2GO_list) {
+# 
+#   topGO_data <- new(
+#     "topGOdata",
+#     ontology = ontology,
+#     allGenes = gene_list,
+#     annot = annFUN.gene2GO,
+#     gene2GO = gene2GO_list
+#   )
+# 
+#   fishers_result <- runTest(
+#     topGO_data,
+#     algorithm = "elim",
+#     statistic = "fisher"
+#   )
+# 
+#   fishers_table <- GenTable(
+#     topGO_data,
+#     Fishers = fishers_result,
+#     useLevels = TRUE,
+#     topNodes = length(usedGO(topGO_data))
+#   )
+# 
+#   fishers_table$Ontology <- ontology
+# 
+#   # Convert p-value to numeric
+# fishers_table$Fishers <- score(fishers_result)[
+#   match(
+#     fishers_table$GO.ID,
+#     names(score(fishers_result))
+#   )
+# ]
+# 
+#   # Multiple-testing correction
+#   fishers_table$FDR <- p.adjust(
+#     fishers_table$Fishers,
+#     method = "BH"
+#   )
+# 
+#   fishers_table
+# }
+```
+
+
+
+```{r}
+# one big loop:
+
+# ---------------------------------------------------------
+# SETTINGS
+# ---------------------------------------------------------
+
+segments <- c("S1", "S2", "S3")
+
+gene_sets <- c(
+  "lox10_positive",
+  "lox10_negative",
+  "haci_positive",
+  "haci_negative",
+  "both_mutant_positive",
+  "both_mutant_negative"
+)
+
+ontologies <- c("BP", "MF", "CC")
+
+
+# ---------------------------------------------------------
+# FUNCTION TO RUN ONE ANALYSIS
+# ---------------------------------------------------------
+
+run_one_GO_analysis <- function(segment, gene_set) {
+
+  message(
+    "Running: ",
+    segment,
+    " | ",
+    gene_set
+  )
+
+
+# Genes of interest
+selected_genes <- topGO_genes[[segment]][[gene_set]]
+
+# Skip if there are zero selected genes
+if (length(selected_genes) == 0) {
+
+  message(
+    "Skipping: ", segment, " | ", gene_set,
+    " — zero genes"
+  )
+
+  return(data.frame(
+    GO.ID = character(),
+    Term = character(),
+    Annotated = character(),
+    Significant = character(),
+    Expected = character(),
+    Fishers = numeric(),
+    Ontology = character(),
+    FDR = numeric(),
+    Segment = character(),
+    GeneSet = character()
+  ))
+}
+
+# Create topGO input vector
+myGenesF <- make_topGO_gene_vector(
+  selected_genes,
+  gene_names
+)
+
+# Also skip if the resulting vector does not contain
+# both selected and non-selected genes
+if (
+  length(myGenesF) == 0 ||
+  length(unique(as.character(myGenesF))) < 2
+) {
+
+  message(
+    "Skipping: ", segment, " | ", gene_set,
+    " — gene vector has fewer than two classes"
+  )
+
+  empty_result <- data.frame(
+  GO.ID = character(),
+  Term = character(),
+  Annotated = character(),
+  Significant = character(),
+  Expected = character(),
+  Fishers = numeric(),
+  Ontology = character(),
+  FDR = numeric(),
+  Segment = character(),
+  GeneSet = character()
+)
+
+return(empty_result)
+}
+
+
+  # Run BP
+  BP <- run_topGO(
+    myGenesF,
+    "BP",
+    all_golist
+  )
+
+  # Run MF
+  MF <- run_topGO(
+    myGenesF,
+    "MF",
+    all_golist
+  )
+
+  # Run CC
+  CC <- run_topGO(
+    myGenesF,
+    "CC",
+    all_golist
+  )
+
+  # Combine
+  combined <- rbind(BP, MF, CC)
+
+  # Add metadata (even if there are zero significant GO terms)
+  combined$Segment <- rep(segment, nrow(combined))
+  combined$GeneSet <- rep(gene_set, nrow(combined))
+
+  # Order by raw p-value
+  combined <- combined[
+    order(combined$Fishers),
+  ]
+
+  return(combined)
+}
+```
+
+```{r}
+# run everything:
+
+# ---------------------------------------------------------
+# RUN ALL ANALYSES
+# ---------------------------------------------------------
+
+GO_results <- list()
+
+for (segment in segments) {
+
+  for (gene_set in gene_sets) {
+
+    result_name <- paste(
+      segment,
+      gene_set,
+      sep = "_"
+    )
+    
+    message("Running: ", result_name)
+
+    GO_results[[result_name]] <- run_one_GO_analysis(
+      segment,
+      gene_set
+    )
+  }
+}
+
+
+saveRDS(GO_results, "GO_results.rds")
+
+```
+
+```{r}
+# # save the tables:
+# 
+# dir.create(
+#   "GO_results",
+#   showWarnings = FALSE
+# )
+# 
+# dir.create(
+#   "GO_results/tables",
+#   showWarnings = FALSE,
+#   recursive = TRUE
+# )
+# 
+# for (result_name in names(GO_results)) {
+# 
+#   write.csv(
+#     GO_results[[result_name]],
+#     file = paste0(
+#       "GO_results/tables/",
+#       result_name,
+#       ".csv"
+#     ),
+#     row.names = FALSE
+#   )
+# }
+```
+
+
+
+
+MF (molecular function), BP (biological process), CC (cellular component)
+
+
+
+
+
+## Load topGO data
+Load the topGO analysis data that was saved in the previous step:
+
+```{r}
+GO_results <- readRDS("GO_results.rds")
+```
+
+## Plot topGO data
+
+1. Combine all GO results in one data frame:
+```{r}
+
+GO_results <- lapply(GO_results, function(df) {
+  df$Annotated   <- as.character(df$Annotated)
+  df$Significant <- as.character(df$Significant)
+  df$Expected    <- as.character(df$Expected)
+  df
+})
+
+GO_all <- bind_rows(GO_results, .id = "Analysis")
+
+# Check the data
+head(GO_all)
+table(GO_all$Segment, GO_all$GeneSet)
+table(GO_all$Ontology)
+
+# Confirm FDR values
+summary(GO_all$FDR)
+```
+
+2. Check data structure:
+```{r}
+str(GO_all[, c("FDR", "Fishers", "Ontology")]) # FDR is numeric
+
+summary(GO_all$FDR)
+```
+
+
+Make Dotplots for every segment and every gene set
+```{r}
+# 
+# # Create output folder
+# dir.create("GO_plots", showWarnings = FALSE)
+# 
+# # Calculate plotting significance
+# GO_all <- GO_all %>%
+#   mutate(
+#     FDR = as.numeric(as.character(FDR)),
+#     neg_log10_FDR = -log10(pmax(FDR, 1e-300))
+#   )
+# 
+# # Select the 15 most significant terms per analysis
+# GO_top <- GO_all %>%
+#   group_by(Segment, GeneSet, Ontology) %>%
+#   slice_min(
+#     order_by = FDR,
+#     n = 15,
+#     with_ties = FALSE
+#   ) %>%
+#   ungroup()
+# 
+# # Make one plot for each segment and gene set
+# for (seg in segments) {
+#   for (gs in gene_sets) {
+# 
+#     plot_data <- GO_top %>%
+#       filter(
+#         Segment == seg,
+#         GeneSet == gs
+#       )
+# 
+#     # Skip if no significant terms
+#     if (nrow(plot_data) == 0) {
+#       message("No significant terms: ", seg, " | ", gs)
+#       next
+#     }
+# 
+#     p <- ggplot(
+#       plot_data,
+#       aes(
+#         x = neg_log10_FDR,
+#         y = reorder(Term, neg_log10_FDR),
+#         size = neg_log10_FDR,
+#         color = neg_log10_FDR
+#       )
+#     ) +
+#       geom_point(alpha = 0.85) +
+#       scale_size_continuous(
+#         range = c(2, 8),
+#         name = "-log10(FDR)"
+#       ) +
+#       scale_color_gradient(
+#         low = "skyblue",
+#         high = "red",
+#         name = "-log10(FDR)"
+#       ) +
+#       facet_wrap(
+#         ~ Ontology,
+#         scales = "free_y"
+#       ) +
+#       labs(
+#         title = paste(seg, "|", gs),
+#         subtitle = "Top 15 GO terms per ontology by FDR",
+#         x = expression(-log[10]("FDR")),
+#         y = "GO term"
+#       ) +
+#       theme_bw(base_size = 11) +
+#       theme(
+#         plot.title = element_text(face = "bold"),
+#         axis.text.y = element_text(size = 8),
+#         strip.text = element_text(face = "bold")
+#       )
+# 
+#     print(p)
+# 
+#     ggsave(
+#       filename = file.path(
+#         "GO_plots",
+#         paste0(seg, "_", gs, ".png")
+#       ),
+#       plot = p,
+#       width = 13,
+#       height = 9,
+#       dpi = 300
+#     )
+#   }
+# }
+```
+
+as svg:
+```{r}
+segments <- c("S1", "S2", "S3")
+
+gene_sets <- c(
+  "lox10_positive",
+  "lox10_negative",
+  "haci_positive",
+  "haci_negative",
+  "both_mutant_positive",
+  "both_mutant_negative"
+)
+
+ontologies <- c("BP", "MF", "CC")
+
+
+# Calculate plotting significance
+GO_all <- GO_all %>%
+  mutate(
+    FDR = as.numeric(as.character(FDR)),
+    neg_log10_FDR = -log10(pmax(FDR, 1e-300))
+  )
+
+# Select the 15 most significant terms per analysis
+GO_top <- GO_all %>%
+  group_by(Segment, GeneSet, Ontology) %>%
+  slice_min(
+    order_by = FDR,
+    n = 15,
+    with_ties = FALSE
+  ) %>%
+  ungroup()
+
+# Make one plot for each segment and gene set
+for (seg in segments) {
+  for (gs in gene_sets) {
+
+    plot_data <- GO_top %>%
+      filter(
+        Segment == seg,
+        GeneSet == gs
+      )
+
+    # Skip if no significant terms
+    if (nrow(plot_data) == 0) {
+      message("No significant terms: ", seg, " | ", gs)
+      next
+    }
+
+    p <- ggplot(
+      plot_data,
+      aes(
+        x = neg_log10_FDR,
+        y = reorder(Term, neg_log10_FDR),
+        size = neg_log10_FDR,
+        color = neg_log10_FDR
+      )
+    ) +
+      geom_point(alpha = 0.85) +
+      scale_size_continuous(
+        range = c(2, 8),
+        name = "-log10(FDR)"
+      ) +
+      scale_color_gradient(
+        low = "skyblue",
+        high = "red",
+        name = "-log10(FDR)"
+      ) +
+      facet_wrap(
+        ~ Ontology,
+        scales = "free_y"
+      ) +
+      labs(
+        title = paste(seg, "|", gs),
+        subtitle = "Top 15 GO terms per ontology by FDR",
+        x = expression(-log[10]("FDR")),
+        y = "GO term"
+      ) +
+      theme_bw() +
+      theme(text = element_text(size=12),
+        legend.position = "bottom",
+        axis.text = element_text(size=12),
+        axis.title.x = element_text(size = 12),
+        axis.text.x=element_text(),
+        axis.text.y=element_text(color='black'),
+        title = element_text(size = 12)
+      )
+
+    print(p)
+
+    # Save as SVG in the existing folder
+    ggsave(
+      filename = file.path(
+        "GO_plots_trash",
+        paste0(seg, "_", gs, ".svg")
+      ),
+      plot = p,
+      width = 26,
+      height = 10,
+      unit = "cm",
+      device = "svg"
+    )
+  }
+}
+
+```
+
+Then extract a list of GO-terms, and get the corresponding Genes, intersect with differentially expressed Genes
+
+1. Extract list of GO-terms:
+
+```{r}
+length(unique(GO_all$GO.ID)) # 42 individual GO-Terms
+
+list_go_terms <- c(unique(GO_all$GO.ID))
+
+```
+
+2. Get all corresponding Genes
+
+```{r}
+dat_corresponding_genes <- subset(dat_b73_go2,goid %in% list_go_terms)
+
+colnames(dat_corresponding_genes)[1] <- "Gene_ID" # change gene name column to Gene_ID so it works with the barplot code from above
+
+dat_corresponding_genes$gene_name <- dat_corresponding_genes$Gene_ID # add a column gene_name bc the function for the barplot needs it, but bc we don't have gene names, it's just the Gene IDs.
+  
+```
+
+3. intersect with differentially expressed genes:
+
+```{r}
+# directly change input here
+
+S1 <- make_segment_plot(
+  segment_name = "S1",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_corresponding_genes
+)
+
+S2 <- make_segment_plot(
+  segment_name = "S2",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_corresponding_genes
+)
+
+S3 <- make_segment_plot(
+  segment_name = "S3",
+  counts = dat_raw_counts,
+  metadata = dat_meta,
+  goi = dat_corresponding_genes
+)
+```
+
+
+
+
+
+
+Get all genes that are associated with one of the GO-Terms, and differentially expressed in both mutants in at least one segment, and plot those genes for all segments:
+
+```{r}
+segments <- c("S1", "S2", "S3")
+genotypes <- c("kn", "lox", "haci")
+mutants <- c("lox", "haci")
+
+# Significance thresholds
+padj_cutoff <- 0.05
+lfc_cutoff <- 1
+
+# --------------------------------------------------
+# 1. Extract genes associated with selected GO terms
+# --------------------------------------------------
+
+selected_go_terms <- unique(as.character(GO_all$GO.ID))
+
+go_map <- dat_b73_go2
+
+go_genes <- unique(as.character(
+  go_map[[1]][go_map$goid %in% selected_go_terms]
+))
+
+go_genes <- go_genes[!is.na(go_genes)]
+
+
+# --------------------------------------------------
+# 2. Fit genotype x condition interaction models
+# --------------------------------------------------
+
+interaction_results <- list()
+condition_results <- list()
+
+for (seg in segments) {
+
+  meta <- dat_meta[
+    dat_meta$segment == seg &
+      dat_meta$condition_group %in% c("w", "c") &
+      dat_meta$genotype %in% genotypes,
+    ,
+    drop = FALSE
+  ]
+
+  samples <- intersect(rownames(meta), colnames(dat_raw_counts))
+  meta <- meta[samples, , drop = FALSE]
+
+  meta$genotype <- factor(
+    as.character(meta$genotype),
+    levels = genotypes
+  )
+
+  meta$condition_group <- factor(
+    as.character(meta$condition_group),
+    levels = c("w", "c")
+  )
+
+  # Require at least 2 samples in every genotype-condition group
+  group_counts <- table(meta$genotype, meta$condition_group)
+
+  if (length(samples) == 0 ||
+      any(group_counts < 2)) {
+    warning("Skipping ", seg,
+            ": need at least 2 samples per genotype in both conditions")
+    next
+  }
+
+  counts <- dat_raw_counts[, samples, drop = FALSE]
+
+  dds <- DESeqDataSetFromMatrix(
+    countData = round(as.matrix(counts)),
+    colData = meta,
+    design = ~ genotype + condition_group + genotype:condition_group
+  )
+
+  dds <- dds[rowSums(counts(dds) >= 10) >= 2, ]
+
+  if (nrow(dds) == 0) next
+
+  dds <- DESeq(dds)
+
+  rn <- resultsNames(dds)
+  print(paste("Coefficients for", seg))
+  print(rn)
+
+  # Main c-vs-w effect in WT (kn)
+  condition_coef <- grep(
+    "^condition_group.*c_vs_w$",
+    rn,
+    value = TRUE
+  )
+
+  if (length(condition_coef) != 1) {
+    stop("Could not identify the c-vs-w coefficient for ", seg,
+         ". Check resultsNames(dds).")
+  }
+
+  # WT c-vs-w results
+  condition_results[[paste("kn", seg, sep = "_")]] <-
+    as.data.frame(results(dds, name = condition_coef))
+
+  # Test whether each mutant's c-vs-w response differs from WT
+  for (mut in mutants) {
+
+    interaction_coef <- grep(
+      paste0("^genotype", mut, ".*condition_groupc$"),
+      rn,
+      value = TRUE
+    )
+
+    if (length(interaction_coef) != 1) {
+      stop(
+        "Could not identify the interaction coefficient for ",
+        mut, " in ", seg,
+        ". Check resultsNames(dds)."
+      )
+    }
+
+    # Interaction test: difference in c-vs-w response vs WT
+    res_int <- as.data.frame(
+      results(dds, name = interaction_coef)
+    )
+    res_int$Gene_ID <- rownames(res_int)
+
+    interaction_results[[paste(mut, seg, sep = "_")]] <- res_int
+
+    # Actual c-vs-w fold change within the mutant:
+    # main condition effect + mutant interaction effect
+    res_mut <- as.data.frame(
+      results(
+        dds,
+        contrast = list(c(condition_coef, interaction_coef))
+      )
+    )
+
+    condition_results[[paste(mut, seg, sep = "_")]] <- res_mut
+  }
+}
+
+
+# --------------------------------------------------
+# 3. Find genes with a significant interaction for
+#    BOTH mutants in at least one segment each
+# --------------------------------------------------
+
+deg_genes <- list()
+
+for (mut in mutants) {
+
+  genes_for_mutant <- character(0)
+
+  for (seg in segments) {
+
+    res <- interaction_results[[paste(mut, seg, sep = "_")]]
+    if (is.null(res)) next
+
+    res$Gene_ID <- rownames(res)
+
+    significant <- !is.na(res$padj) &
+      res$padj < padj_cutoff &
+      abs(res$log2FoldChange) > lfc_cutoff
+
+    genes_for_mutant <- union(
+      genes_for_mutant,
+      res$Gene_ID[significant]
+    )
+  }
+
+  deg_genes[[mut]] <- genes_for_mutant
+}
+
+# Must differ from WT for both lox and haci,
+# potentially in different segments
+shared_interaction_genes <- intersect(
+  deg_genes$lox,
+  deg_genes$haci
+)
+
+# Restrict to genes associated with the selected GO terms
+final_genes <- intersect(
+  shared_interaction_genes,
+  go_genes
+)
+
+cat("Genes with significant lox-vs-WT interaction:",
+    length(deg_genes$lox), "\n")
+cat("Genes with significant haci-vs-WT interaction:",
+    length(deg_genes$haci), "\n")
+cat("Genes significant for both mutant interactions:",
+    length(shared_interaction_genes), "\n")
+cat("Final GO-associated genes:", length(final_genes), "\n")
+
+if (length(final_genes) == 0) {
+  stop(
+    "No genes passed the interaction and GO filters. ",
+    "Check gene ID formats, GO mapping, and thresholds."
+  )
+}
+
+
+# --------------------------------------------------
+# 4. Collect actual c-vs-w log2 fold changes for
+#    kn, lox, haci in every segment
+# --------------------------------------------------
+
+plot_list <- list()
+
+for (seg in segments) {
+  for (geno in genotypes) {
+
+    res <- condition_results[[paste(geno, seg, sep = "_")]]
+
+    if (is.null(res)) next
+
+    res$Gene_ID <- rownames(res)
+    res <- res[res$Gene_ID %in% final_genes, , drop = FALSE]
+
+    if (nrow(res) == 0) next
+
+    plot_list[[paste(geno, seg, sep = "_")]] <- data.frame(
+      Segment = seg,
+      Gene_ID = res$Gene_ID,
+      Genotype = geno,
+      log2FC = res$log2FoldChange,
+      padj = res$padj
+    )
+  }
+}
+
+if (length(plot_list) == 0) {
+  stop("No selected genes were available for plotting.")
+}
+
+plot_data <- do.call(rbind, plot_list)
+
+# Stars here show significance of c vs w within each genotype
+plot_data$Significance <- ifelse(
+  is.na(plot_data$padj), "",
+  ifelse(plot_data$padj < 0.001, "***",
+  ifelse(plot_data$padj < 0.01, "**",
+  ifelse(plot_data$padj < 0.05, "*", "")))
+)
+
+plot_data$Genotype <- factor(
+  plot_data$Genotype,
+  levels = genotypes
+)
+
+plot_data$Gene_ID <- factor(
+  plot_data$Gene_ID,
+  levels = final_genes[final_genes %in% plot_data$Gene_ID]
+)
+
+
+# --------------------------------------------------
+# 5. Plot all selected genes across all segments
+# --------------------------------------------------
+
+p <- ggplot(
+  plot_data,
+  aes(x = Gene_ID, y = log2FC, fill = Genotype)
+) +
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width = 0.7
+  ) +
+  geom_hline(yintercept = 0, colour = "black", linewidth = 0.3) +
+  geom_text(
+    aes(
+      label = Significance,
+      vjust = ifelse(log2FC >= 0, -0.3, 1.2)
+    ),
+    position = position_dodge(width = 0.8),
+    size = 2.5
+  ) +
+  facet_wrap(~Segment, nrow = 1, scales = "free_x") +
+  scale_fill_manual(values = c(
+    kn = "grey60",
+    lox = "#EF4444",
+    haci = "#3A86D4"
+  )) +
+  labs(
+    title = "c vs w log2 fold changes for GO-associated interaction DEGs",
+    subtitle = "Genes show a significant c-vs-w response difference for both mutants vs WT in at least one segment",
+    x = "Gene",
+    y = expression(log[2]~fold~change~(c~vs~w)),
+    fill = "Genotype"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, hjust = 1, vjust = 0.5, size = 6
+    ),
+    panel.grid.major.x = element_blank(),
+    legend.position = "top"
+  )
+
+print(p)
+
+ggsave(
+  file.path("GO_plots", "c_vs_w_interaction_DEGs_by_segment.svg"),
+  plot = p,
+  width = 35,
+  height = 16,
+  units = "cm",
+  device = "svg"
+)
+
+```
+
+```{r}
+# Flip the log2 fold changes
+plot_data$log2FC <- plot_data$log2FC * -1
+
+# Recreate the plot using the updated values
+p <- p %+% plot_data
+
+print(p)
+```
+
+```{r}
+ggsave(
+  file.path("GO_plots", "c_vs_w_interaction_DEGs_by_segment_flipped.svg"),
+  plot = p,
+  width = 35,
+  height = 16,
+  units = "cm",
+  device = "svg"
+)
+```
+
+Now correctly:
+
+```{r}
+names(condition_results)
+names(interaction_results)
+```
+
+
+```{r}
+
+# Keep the original data and plot unchanged
+# Assumes condition_results and interaction_results are named
+# with paste(segment, genotype_or_mutant, sep = "_")
+
+segments <- c("S1", "S2", "S3")
+genotypes <- c("kn", "lox", "haci")
+mutants <- c("lox", "haci")
+
+# 1. Assemble genotype-specific c vs w effects and standard errors
+plot_data_new <- do.call(rbind, lapply(segments, function(seg) {
+  do.call(rbind, lapply(genotypes, function(gt) {
+
+    res <- condition_results[[paste(gt, seg, sep = "_")]]
+
+    if (is.null(res)) {
+      stop("Missing condition results for: ", seg, " / ", gt,
+           ". Check names(condition_results).")
+    }
+
+    res <- as.data.frame(res)
+    res$Gene_ID <- rownames(res)
+
+    res <- res[res$Gene_ID %in% final_genes, , drop = FALSE]
+
+    data.frame(
+      Segment = seg,
+      Gene_ID = res$Gene_ID,
+      Genotype = gt,
+      log2FC_original = res$log2FoldChange,
+      lfcSE = res$lfcSE
+    )
+  }))
+}))
+
+# 2. Flip the plotted log2FC and calculate flipped 95% confidence intervals
+plot_data_new <- plot_data_new %>%
+  mutate(
+    log2FC = -log2FC_original,
+    ymin = -(log2FC_original + 1.96 * lfcSE),
+    ymax = -(log2FC_original - 1.96 * lfcSE),
+    Genotype = factor(Genotype, levels = genotypes),
+    Segment = factor(Segment, levels = segments)
+  )
+
+# 3. Get mutant-vs-kn interaction significance for each gene and segment
+interaction_data <- do.call(rbind, lapply(segments, function(seg) {
+  do.call(rbind, lapply(mutants, function(mut) {
+
+    res <- interaction_results[[paste(mut, seg, sep = "_")]]
+
+    if (is.null(res)) {
+      stop("Missing interaction results for: ", seg, " / ", mut,
+           ". Check names(interaction_results).")
+    }
+
+    res <- as.data.frame(res)
+    res$Gene_ID <- rownames(res)
+
+    res <- res[res$Gene_ID %in% final_genes, , drop = FALSE]
+
+    data.frame(
+      Segment = seg,
+      Gene_ID = res$Gene_ID,
+      Genotype = mut,
+      interaction_padj = res$padj
+    )
+  }))
+}))
+
+# Convert adjusted p-values to significance stars
+interaction_data <- interaction_data %>%
+  mutate(
+    Significance = case_when(
+      is.na(interaction_padj) ~ "",
+      interaction_padj < 0.001 ~ "***",
+      interaction_padj < 0.01  ~ "**",
+      interaction_padj < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# 4. Position stars above each mutant's error bar
+star_data <- plot_data_new %>%
+  filter(Genotype %in% mutants) %>%
+  left_join(
+    interaction_data,
+    by = c("Segment", "Gene_ID", "Genotype")
+  ) %>%
+  mutate(
+    Significance = coalesce(Significance, ""),
+    star_y = ymax + 0.08 * pmax(1, abs(ymax), abs(ymin))
+  ) %>%
+  filter(Significance != "")
+
+# 5. Plot flipped fold changes, 95% CIs, and mutant-vs-kn stars
+dodge <- position_dodge(width = 0.75)
+
+p_flipped <- ggplot(
+  plot_data_new,
+  aes(x = Gene_ID, y = log2FC, color = Genotype, group = Genotype)
+) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbar(
+    aes(ymin = ymin, ymax = ymax),
+    width = 0.2,
+    position = dodge
+  ) +
+  geom_point(position = dodge, size = 2) +
+  geom_text(
+    data = star_data,
+    aes(x = Gene_ID, y = star_y, label = Significance,
+        color = Genotype, group = Genotype),
+    position = dodge,
+    vjust = 0,
+    show.legend = FALSE,
+    size = 3.5
+  ) +
+  facet_wrap(~ Segment, scales = "free_y") +
+  labs(
+    x = "Gene",
+    y = "Flipped log2 fold change (w vs c)",
+    color = "Genotype",
+    title = "Condition response by genotype",
+    subtitle = "Error bars: 95% confidence intervals; stars: mutant vs kn interaction tests",
+    caption = "* adjusted p < 0.05; ** adjusted p < 0.01; *** adjusted p < 0.001"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )
+
+print(p_flipped)
+
+# Save as a new file; does not overwrite your previous SVG
+ggsave(
+  file.path("GO_plots", "c_vs_w_interaction_DEGs_flipped_errorbars.svg"),
+  plot = p_flipped,
+  width = 35,
+  height = 16,
+  units = "cm",
+  device = "svg"
+)
+```
+
+```{r}
+
+
+
+segments <- c("S1", "S2", "S3")
+genotypes <- c("kn", "lox", "haci")
+mutants <- c("lox", "haci")
+
+# 1. Collect c vs w effects for each genotype and segment
+plot_data_new <- do.call(rbind, lapply(segments, function(seg) {
+  do.call(rbind, lapply(genotypes, function(gt) {
+
+    res <- as.data.frame(
+      condition_results[[paste(gt, seg, sep = "_")]]
+    )
+    res$Gene_ID <- rownames(res)
+    res <- res[res$Gene_ID %in% final_genes, , drop = FALSE]
+
+    data.frame(
+      Segment = seg,
+      Gene_ID = res$Gene_ID,
+      Genotype = gt,
+      log2FC_original = res$log2FoldChange,
+      lfcSE = res$lfcSE
+    )
+  }))
+}))
+
+# 2. Flip fold changes and calculate flipped 95% confidence intervals
+plot_data_new <- plot_data_new %>%
+  mutate(
+    log2FC = -log2FC_original,
+    ymin = -(log2FC_original + 1.96 * lfcSE),
+    ymax = -(log2FC_original - 1.96 * lfcSE),
+    Genotype = factor(Genotype, levels = genotypes),
+    Segment = factor(Segment, levels = segments)
+  )
+
+# 3. Collect mutant-vs-kn interaction adjusted p-values
+interaction_data <- do.call(rbind, lapply(segments, function(seg) {
+  do.call(rbind, lapply(mutants, function(mut) {
+
+    result_name <- paste(mut, seg, sep = "_")
+    res <- as.data.frame(interaction_results[[result_name]])
+    res$Gene_ID <- rownames(res)
+    res <- res[res$Gene_ID %in% final_genes, , drop = FALSE]
+
+    data.frame(
+      Segment = seg,
+      Gene_ID = res$Gene_ID,
+      Genotype = mut,
+      interaction_padj = res$padj
+    )
+  }))
+}))
+
+interaction_data <- interaction_data %>%
+  mutate(
+    Significance = case_when(
+      is.na(interaction_padj) ~ "",
+      interaction_padj < 0.001 ~ "***",
+      interaction_padj < 0.01  ~ "**",
+      interaction_padj < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+# 4. Prepare star positions
+star_data <- plot_data_new %>%
+  filter(Genotype %in% mutants) %>%
+  left_join(
+    interaction_data,
+    by = c("Segment", "Gene_ID", "Genotype")
+  ) %>%
+  mutate(
+    Significance = coalesce(Significance, ""),
+    star_y = ymax + 0.08 * pmax(1, abs(ymax), abs(ymin))
+  ) %>%
+  filter(Significance != "")
+
+# 5. Grouped BARPLOT with error bars and mutant-vs-kn stars
+dodge <- position_dodge(width = 0.8)
+
+p_flipped <- ggplot(
+  plot_data_new,
+  aes(x = Gene_ID, y = log2FC, fill = Genotype)
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    color = "grey50"
+  ) +
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width = 0.7
+  ) +
+  geom_errorbar(
+    aes(ymin = ymin, ymax = ymax),
+    position = dodge,
+    width = 0.2
+  ) +
+  geom_text(
+    data = star_data,
+    aes(
+      x = Gene_ID,
+      y = star_y,
+      label = Significance,
+      group = Genotype
+    ),
+    position = dodge,
+    inherit.aes = FALSE,
+    color = "black",
+    vjust = 0,
+    size = 3.5
+  ) +
+  facet_wrap(~ Segment, scales = "free_y") +
+  labs(
+    x = "Gene",
+    y = "Flipped log2 fold change",
+    fill = "Genotype",
+    title = "Condition response by genotype",
+    subtitle = "Bars show flipped c-vs-w log2 fold changes; error bars show approximate 95% CIs",
+    caption = "Stars indicate mutant-vs-kn interaction tests: * adj. p < 0.05; ** < 0.01; *** < 0.001"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    legend.position = "top"
+  )
+
+print(p_flipped)
+
+# Save as a new SVG without overwriting the previous file
+ggsave(
+  file.path("GO_plots", "c_vs_w_interaction_DEGs_flipped_barplots.svg"),
+  plot = p_flipped,
+  width = 35,
+  height = 16,
+  units = "cm",
+  device = "svg"
+)
+
+```
+
+MAke a table with genes and corresponding GO-Terms:
+
+```{r}
+table_go_terms_final <- subset(dat_corresponding_genes, Gene_ID %in% final_genes)
+```
+
+## 5.2. Dotplots
+
+## 5.3. Gene-concept network
+
+## 5.2. ORA (Over-Representation Analysis)
+
+```{r}
+# dat_raw_counts$dex <- relevel(airway$dex, ref = "untrt")
+# dds <- DESeqDataSet(airway, design = ~ cell + dex)
+# dds <- dds[rowSums(counts(dds)) >= 10, ]
+# dds <- DESeq(dds)
+# res <- results(dds, contrast = c("dex", "trt", "untrt"))
+# 
+# nrow(res)                                # genes tested
+```
+
+
+
+
+
+# 6. GSEA
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
